@@ -1,6 +1,20 @@
 from .models import EpisodeState
 
 
+def _load_ground_truth(state: EpisodeState) -> dict:
+    import json
+    from pathlib import Path
+
+    scenario_path = Path(__file__).parent.parent / "scenarios" / state.task_id / f"{state.scenario_id}.json"
+    if not scenario_path.exists():
+        return {}
+    try:
+        payload = json.loads(scenario_path.read_text())
+        return payload.get("ground_truth", {})
+    except Exception:
+        return {}
+
+
 def grade_easy(state: EpisodeState) -> tuple[float, dict]:
     """
     Task 1 — The Detective.
@@ -10,17 +24,7 @@ def grade_easy(state: EpisodeState) -> tuple[float, dict]:
       - System health restored (mean health score >= 0.85): 0.20
       - Efficiency bonus (done in <= 8 steps): 0.10
     """
-    import json
-    from pathlib import Path
-
-    root_cause = "db-proxy"
-    scenario_path = Path(__file__).parent.parent / "scenarios" / state.task_id / f"{state.scenario_id}.json"
-    if scenario_path.exists():
-        try:
-            payload = json.loads(scenario_path.read_text())
-            root_cause = payload.get("ground_truth", {}).get("root_cause_service", root_cause)
-        except Exception:
-            pass
+    root_cause = _load_ground_truth(state).get("root_cause_service", "db-proxy")
 
     breakdown = {
         "root_identified": 0.0,
@@ -84,7 +88,25 @@ def grade_medium(state: EpisodeState) -> tuple[float, dict]:
             )
 
     score = round(sum(metric_scores.values()) / 4.0, 4)
-    return score, metric_scores
+
+    worst_service_per_metric: dict[str, str] = {}
+    worst_value_per_metric: dict[str, float] = {}
+    for metric in ["cpu_pct", "mem_pct", "error_rate", "latency_ms"]:
+        series = getattr(metrics, metric)
+        service, value = max(series.items(), key=lambda item: item[1])
+        worst_service_per_metric[metric] = service
+        worst_value_per_metric[metric] = value
+
+    breakdown: dict[str, object] = dict(metric_scores)
+    breakdown["worst_service_per_metric"] = worst_service_per_metric
+    breakdown["worst_value_per_metric"] = worst_value_per_metric
+    breakdown["thresholds"] = thresholds
+
+    root = _load_ground_truth(state).get("root_cause_service")
+    if root:
+        breakdown["scenario_root_cause_service"] = root
+
+    return score, breakdown
 
 
 def grade_hard(state: EpisodeState) -> tuple[float, dict]:
@@ -96,10 +118,11 @@ def grade_hard(state: EpisodeState) -> tuple[float, dict]:
       - System health restored (overall >= 0.80): 0.10
       - Efficiency (found fix in <= 10 steps): 0.20
     """
-    correct_key = "db_timeout"
-    correct_value = 5000
+    expected = _load_ground_truth(state)
+    correct_key = expected.get("correct_config_key", "db_timeout")
+    correct_value = expected.get("correct_config_value", 5000)
 
-    breakdown = {
+    components: dict[str, float] = {
         "diagnosis": 0.0,
         "correct_key": 0.0,
         "value_progress": 0.0,
@@ -113,7 +136,7 @@ def grade_hard(state: EpisodeState) -> tuple[float, dict]:
         and action.get("action_type") in {"CHECK_LOGS", "INSPECT_SERVICE"}
         for action in state.action_history
     ):
-        breakdown["diagnosis"] = 0.15
+        components["diagnosis"] = 0.15
 
     for action in state.action_history:
         if action.get("action_type") != "UPDATE_CONFIG":
@@ -121,7 +144,7 @@ def grade_hard(state: EpisodeState) -> tuple[float, dict]:
         if action.get("config_key") != correct_key:
             continue
 
-        breakdown["correct_key"] = 0.25
+        components["correct_key"] = 0.25
         val = action.get("config_value")
         if val is None:
             continue
@@ -131,20 +154,28 @@ def grade_hard(state: EpisodeState) -> tuple[float, dict]:
             continue
 
         if val_int == correct_value:
-            breakdown["correct_value"] = 0.35
-            breakdown["value_progress"] = max(breakdown["value_progress"], 0.20)
+            components["correct_value"] = 0.35
+            components["value_progress"] = max(components["value_progress"], 0.20)
         elif 2500 <= val_int <= 8000:
-            breakdown["value_progress"] = max(breakdown["value_progress"], 0.15)
+            components["value_progress"] = max(components["value_progress"], 0.15)
         elif 1000 <= val_int < 2500:
-            breakdown["value_progress"] = max(breakdown["value_progress"], 0.08)
+            components["value_progress"] = max(components["value_progress"], 0.08)
 
     final_health = state.observation.health_summary.overall
-    breakdown["health_restored"] = round(min(0.03, final_health * 0.03), 4)
+    components["health_restored"] = round(min(0.03, final_health * 0.03), 4)
 
-    if state.step <= 10 and breakdown["correct_value"] > 0:
-        breakdown["efficiency"] = 0.02
+    if state.step <= 10 and components["correct_value"] > 0:
+        components["efficiency"] = 0.02
 
-    score = sum(breakdown.values())
+    breakdown: dict[str, object] = dict(components)
+
+    breakdown["scenario_expected_key"] = str(correct_key)
+    breakdown["scenario_expected_value"] = int(correct_value)
+    breakdown["update_actions_attempted"] = sum(
+        1 for action in state.action_history if action.get("action_type") == "UPDATE_CONFIG"
+    )
+
+    score = sum(components.values())
     return round(min(1.0, score), 4), breakdown
 
 

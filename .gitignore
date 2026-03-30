@@ -6,3 +6,12 @@ __pycache__/
 .venv/
 venv/
 baseline_scores.json
+.DS_Store
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.log

@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
+import sys
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,7 +15,17 @@ env = SREEnvironment()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _ = app
-    if not Path("scenarios/easy").exists():
+    scenarios_root = Path("scenarios")
+    required_tasks = ["easy", "medium", "hard"]
+    should_generate = False
+
+    for task in required_tasks:
+        task_dir = scenarios_root / task
+        if not task_dir.exists() or not any(task_dir.glob("*.json")):
+            should_generate = True
+            break
+
+    if should_generate:
         generate_all_scenarios()
     yield
 
@@ -107,23 +118,56 @@ def baseline():
     import subprocess
     import time
 
+    inference_path = Path(__file__).with_name("inference.py")
     start = time.time()
-    result = subprocess.run(
-        ["python", "inference.py", "--output-json"],
-        capture_output=True,
-        text=True,
-        timeout=19 * 60,
-    )
+    try:
+        result = subprocess.run(
+            [sys.executable, str(inference_path), "--output-json"],
+            capture_output=True,
+            text=True,
+            timeout=19 * 60,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "ok": False,
+            "error": "inference_timeout",
+            "message": "inference.py exceeded 19 minute timeout",
+            "stdout_tail": (exc.stdout or "")[-1200:],
+            "stderr_tail": (exc.stderr or "")[-1200:],
+            "total_time_s": round(time.time() - start, 1),
+        }
+
     elapsed = round(time.time() - start, 1)
 
+    if result.returncode != 0:
+        return {
+            "ok": False,
+            "error": "inference_failed",
+            "returncode": result.returncode,
+            "stdout_tail": (result.stdout or "")[-1200:],
+            "stderr_tail": (result.stderr or "")[-1200:],
+            "total_time_s": elapsed,
+        }
+
+    stdout_lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+    candidate = stdout_lines[-1] if stdout_lines else ""
+
     try:
-        loaded = json.loads(result.stdout)
+        loaded = json.loads(candidate)
     except Exception:
-        loaded = {"error": result.stderr or "inference.py failed"}
+        return {
+            "ok": False,
+            "error": "invalid_inference_json",
+            "message": "Could not parse JSON output from inference.py",
+            "stdout_tail": (result.stdout or "")[-1200:],
+            "stderr_tail": (result.stderr or "")[-1200:],
+            "total_time_s": elapsed,
+        }
 
     if not isinstance(loaded, dict):
         loaded = {"result": loaded}
 
     scores: dict[str, object] = dict(loaded)
+    scores["ok"] = True
     scores["total_time_s"] = elapsed
     return scores

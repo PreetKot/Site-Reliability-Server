@@ -4,12 +4,19 @@ FROM python:3.11-slim
 # All simulation is in-memory Python no external services required
 # Typical peak memory usage: < 512MB
 
+ENV PYTHONDONTWRITEBYTECODE=1 \
+	PYTHONUNBUFFERED=1
+
 WORKDIR /app
+
+RUN adduser --disabled-password --gecos "" --home /home/appuser appuser
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+COPY --chown=appuser:appuser . .
+
+USER appuser
 
 RUN python env/data_generator.py
 

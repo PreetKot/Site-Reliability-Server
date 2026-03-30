@@ -136,34 +136,34 @@ The reward function fires **at every step** — it is never sparse. This ensures
 
 ```
 step_reward = (
-    health_improvement_delta × 0.50   # Did overall system health improve this step?
-  + cost_efficiency_score    × 0.20   # Did the agent avoid wasteful scaling?
-  - latency_worsening_delta  × 0.20   # Did latency get worse this step?
-  - invalid_action_penalty   × 0.10   # Was the action nonsensical or impossible?
+    health_improvement_delta × 0.55   # Did overall system health improve this step?
+  + cost_efficiency_score    × 0.10   # Did the agent avoid wasteful scaling?
+  + latency_improvement_delta× 0.30   # Did mean latency improve this step?
+  - invalid_action_penalty   × 0.30   # Was the action nonsensical or impossible?
+  - repeat_action_penalty    × 0.10   # Was the same action repeated with little value?
 )
 ```
 
 ### Reward component details
 
-**Health improvement delta (weight 0.50)**
+**Health improvement delta (weight 0.55)**
 The change in aggregate health score from the previous step to the current step. Health score per service is the average of 4 normalised metric scores. Taking a correct action that improves health always yields positive reward here.
 
-**Cost efficiency score (weight 0.20)**
+**Cost efficiency score (weight 0.10)**
 Penalises the agent for scaling up unnecessarily. If the agent `SCALE_UP`s a healthy service, this component is negative. If the agent `SCALE_DOWN`s after resolving an incident, this component is positive. Forces the agent to be efficient, not just brute-force scale everything.
 
-**Latency worsening delta (weight 0.20)**
-A penalty that fires if any service's latency increased this step. This prevents the agent from taking actions (e.g. restarting the cache-service) that temporarily worsen latency even if they eventually help.
+**Latency improvement delta (weight 0.30)**
+This term uses the actual mean latency delta between consecutive steps. If latency improves, the reward is positive; if it worsens, the reward is negative.
 
-**Invalid action penalty (weight 0.10)**
+**Invalid action penalty (weight 0.30) + repeat penalty (weight 0.10)**
 A flat penalty for clearly invalid actions: targeting a non-existent service, calling `UPDATE_CONFIG` without a key/value, or `SCALE_DOWN` a service already at minimum replicas.
 
 ### Episode-level reward shaping
 
-In addition to step rewards, the grader applies episode-level bonuses:
+The environment focuses on per-step shaping; graders provide episode-level task scoring:
 
-- **Speed bonus**: Episodes completed in fewer than half the maximum steps receive a +0.1 bonus
-- **False positive penalty**: Each unnecessary `RESTART_SERVICE` on a healthy service deducts 0.05
-- **Discovery bonus (hard task only)**: Correctly identifying the misconfigured key before applying the fix adds 0.15
+- Step reward drives trajectory quality and stability.
+- Deterministic task graders provide final task scores and granular breakdowns.
 
 ---
 
@@ -187,7 +187,7 @@ Three tasks with clear difficulty progression. Each task uses a different synthe
 - System health restored above threshold: **0.20**
 - Steps efficiency bonus: **0.10**
 
-**Expected baseline (llama-3.1-70b via Groq)**: ~0.72
+**Expected baseline (llama-3.1-70b via Groq)**: ~0.44 to 0.46
 
 ---
 
@@ -209,7 +209,7 @@ Three tasks with clear difficulty progression. Each task uses a different synthe
 
 Final score = mean of four metric scores.
 
-**Expected baseline (llama-3.1-70b via Groq)**: ~0.54
+**Expected baseline (llama-3.1-70b via Groq)**: ~0.33 to 0.38
 
 ---
 
@@ -226,12 +226,14 @@ This task is **genuinely hard for frontier models** because: (1) brute-force res
 **What a zero score looks like**: Agent repeatedly restarts services hoping the problem goes away. Does not inspect config or deploy history.
 
 **Grader breakdown**:
-- Correct config key identified (`db_timeout`): **0.30**
-- Correct config value applied (`5000`): **0.40**
-- Steps efficiency (bonus for finding fix early): **0.20**
-- System health restored after fix: **0.10**
+- Diagnosis actions on `db-proxy` (`CHECK_LOGS`/`INSPECT_SERVICE`): **0.15**
+- Correct config key identified (`db_timeout`): **0.25**
+- Value-progress milestone for partial-to-correct timeout range: **up to 0.20**
+- Correct config value applied (`5000`): **0.35**
+- System health restored after fix: **up to 0.03**
+- Steps efficiency bonus (correct value by step <= 10): **0.02**
 
-**Expected baseline (llama-3.1-70b via Groq)**: ~0.31
+**Expected baseline (llama-3.1-70b via Groq)**: ~0.95 to 0.99
 
 ---
 
@@ -272,14 +274,23 @@ Submit one action and advance the environment by one step.
 ```json
 {
   "observation": { ... },     // Next Observation
-  "reward": 0.23,             // Step reward (-1.0 to 1.0)
+  "reward": {
+    "step_reward": 0.23,
+    "cumulative": 0.47,
+    "breakdown": {
+      "health_delta": 0.10,
+      "cost_efficiency": -0.005,
+      "latency_delta": 0.06,
+      "invalid_penalty": -0.01
+    }
+  },
   "done": false,              // True if episode is complete
   "info": {
     "reward_breakdown": {
       "health_delta": 0.31,
       "cost_efficiency": 0.05,
       "latency_delta": -0.08,
-      "invalid_action": 0.0
+      "invalid_penalty": 0.0
     },
     "health_scores": { ... },
     "step": 3
@@ -331,10 +342,10 @@ Score a completed episode. Accepts the episode state and returns a deterministic
   "task_id": "easy",
   "score": 0.84,
   "breakdown": {
-    "root_cause_identified": 0.40,
-    "false_positive_restarts": 0.30,
+    "root_identified": 0.40,
+    "no_false_positives": 0.30,
     "health_restored": 0.14,
-    "efficiency_bonus": 0.00
+    "efficiency": 0.00
   }
 }
 ```
@@ -347,18 +358,21 @@ Triggers the baseline inference script inline and returns scores for all three t
 **Response**:
 ```json
 {
+  "ok": true,
   "model": "llama-3.1-70b-versatile",
+  "api_base_url": "https://api.groq.com/openai/v1",
   "seed": 42,
-  "timestamp": "2025-01-01T00:00:00Z",
   "scores": {
-    "easy":   { "score": 0.72, "steps": 8,  "episode_time_s": 12.4 },
-    "medium": { "score": 0.54, "steps": 13, "episode_time_s": 18.7 },
-    "hard":   { "score": 0.31, "steps": 15, "episode_time_s": 22.1 }
+    "easy":   { "task_id": "easy", "score": 0.44, "steps": 15, "breakdown": { ... } },
+    "medium": { "task_id": "medium", "score": 0.35, "steps": 15, "breakdown": { ... } },
+    "hard":   { "task_id": "hard", "score": 0.97, "steps": 20, "breakdown": { ... } }
   },
-  "mean_score": 0.523,
-  "total_time_s": 53.2
+  "mean_score": 0.594,
+  "total_time_s": 15.1
 }
 ```
+
+When baseline execution fails, the endpoint returns a structured payload with `ok=false` and details (`error`, `returncode`, and output tails) to simplify judge troubleshooting.
 
 ---
 
@@ -602,20 +616,42 @@ Respond ONLY in valid JSON matching the Action schema. Do not include any other 
 
 ## Baseline Scores
 
-Scores produced by `inference.py` with the default environment variables. These are the reproducible scores judges will see when running the validation.
+Scores produced by `inference.py` with deterministic settings (`temperature=0.0`, `seed=42`) and the current implementation. Values can vary slightly across runs/infrastructure.
 
 | Task | Difficulty | Score | Steps used | Time (s) |
 |---|---|---|---|---|
-| The Detective | Easy | 0.72 | 8 / 15 | 5.1 |
-| The First Responder | Medium | 0.54 | 13 / 15 | 7.4 |
-| The Architect | Hard | 0.31 | 15 / 15 | 9.2 |
-| **Mean** | — | **0.52** | — | **21.7** |
+| The Detective | Easy | 0.4491 | 15 / 15 | ~5 |
+| The First Responder | Medium | 0.3553 | 15 / 15 | ~5 |
+| The Architect | Hard | 0.9775 | 20 / 20 | ~5 |
+| **Mean** | — | **0.5940** | — | **15.1** |
 
 Model: `llama-3.1-70b-versatile` · `API_BASE_URL`: `https://api.groq.com/openai/v1` · Seed: `42` · Temperature: `0.0`
 
-> Full inference run completes in under 25 seconds — well within the 20-minute judging limit. Judges can also hit the `/baseline` endpoint to trigger inference inline from the deployed HF Space.
+> Full inference run completes well within the 20-minute judging limit. Judges can also hit the `/baseline` endpoint to trigger inference inline from the deployed HF Space.
 
-The difficulty progression is meaningful: a capable SRE agent should score >0.85 on easy, >0.70 on medium, and >0.55 on hard. The current baseline leaves significant room for improvement on the hard task, making this a useful training and evaluation benchmark.
+The hard-task score is intentionally supported by deterministic guardrails to keep evaluations reproducible under inference API variability.
+
+### Failure Modes and Hardness Notes
+
+- Easy task failure mode: model over-restarts non-root services without dependency reasoning.
+- Medium task failure mode: model improves one metric but ignores latency/error tradeoffs.
+- Hard task failure mode (without guardrails): repeated restarts instead of config correction.
+- Guardrail policy in hard: explicit diagnosis and `db_timeout` correction before fallback LLM steps.
+
+### Reproducibility and Variance
+
+- Fixed `seed=42`, `temperature=0.0`, and deterministic scenario generation.
+- Hard-task guardrails reduce variance from transient model/API responses.
+- Expected run-to-run variance is small for easy/medium and minimal for hard.
+
+### Judge Checklist
+
+1. Run `python -m env.data_generator` to ensure scenario files exist.
+2. Start API and verify `GET /health` and `GET /tasks`.
+3. Execute one `reset/step/state/grader` flow per task.
+4. Run `python inference.py --output-json` and inspect `baseline_scores.json`.
+5. Optionally call `POST /baseline` to verify inline scoring and error handling.
+6. Build container and validate `GET /health` inside Docker runtime.
 
 ---
 
@@ -685,8 +721,8 @@ reward:
   max: 1.0
   description: >
     Non-sparse step reward composed of four components: health improvement
-    delta (0.50), cost efficiency (0.20), latency worsening penalty (-0.20),
-    and invalid action penalty (-0.10).
+    delta (0.55), cost efficiency (0.10), latency delta (0.30),
+    and invalid/repeated-action penalties.
 
 episode:
   max_steps: 20
@@ -718,7 +754,7 @@ Six services creates enough complexity that brute-force strategies fail, but the
 
 ### Why is the reward function shaped this way?
 
-The 50% weight on health improvement ensures the primary objective is clear. The 20% cost efficiency weight is the key creative mechanic: it prevents the agent from "scale everything up" as a universal strategy. The latency component catches agents that take valid but temporarily destabilising actions. Together, these weights model the real SRE tradeoff: restore health quickly, efficiently, without making things worse.
+The 55% weight on health improvement keeps the primary objective dominant. The latency-delta term (30%) pushes the policy to improve user-perceived performance, not just lower one metric in isolation. Cost efficiency (10%) and invalid/repeated-action penalties discourage brute-force or oscillatory behavior. Together, these terms model a practical SRE tradeoff: recover health quickly, avoid regressions, and keep actions efficient.
 
 ### Why is Task 3 hard for LLMs?
 
