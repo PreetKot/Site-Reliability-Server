@@ -20,4 +20,15 @@ TASKS = [
         "description": "Diagnose and fix a hidden database timeout misconfiguration",
         "max_steps": 20,
     },
+    {
+        "id": "expert",
+        "name": "The Storm Chaser",
+        "difficulty": "expert",
+        "description": (
+            "Resolve a dual-service cascading failure where a network partition "
+            "has split the data layer. Two services must be fixed in the correct "
+            "causal order — fixing the wrong one first leaves the system degraded."
+        ),
+        "max_steps": 25,
+    },
 ]

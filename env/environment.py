@@ -8,6 +8,8 @@ from .simulator import SERVICE_GRAPH, VirtualDataCentre
 
 SCENARIOS_DIR = Path(__file__).parent.parent / "scenarios"
 
+_MAX_STEPS = {"easy": 15, "medium": 15, "hard": 20, "expert": 25}
+
 
 class SREEnvironment:
     def __init__(self):
@@ -50,7 +52,7 @@ class SREEnvironment:
         if self._vdc is None:
             raise RuntimeError("Environment simulator is not initialized")
 
-        max_steps = {"easy": 15, "medium": 15, "hard": 20}[self._state.task_id]
+        max_steps = _MAX_STEPS[self._state.task_id]
         self._state.step += 1
 
         result = self._vdc.apply_action(
@@ -62,6 +64,7 @@ class SREEnvironment:
 
         obs = self._build_observation(self._state.task_id, self._state.step, self._state.scenario_id)
 
+        # --- Reward components ---
         new_health = obs.health_summary.overall
         health_delta = new_health - self._prev_health
         self._prev_health = new_health
@@ -70,7 +73,10 @@ class SREEnvironment:
         latency_delta_norm = max(-1.0, min(1.0, (self._prev_mean_latency - new_mean_latency) / 400.0))
         self._prev_mean_latency = new_mean_latency
 
+        # SCALE_UP incurs a cloud-cost penalty (×0.10 weight)
         cost_efficiency = -0.05 if action.action_type.value == "SCALE_UP" else 0.0
+
+        # Repeated identical action on same service incurs a small penalty
         repeated_action_penalty = 0.0
         if self._state.action_history:
             last = self._state.action_history[-1]
@@ -79,14 +85,26 @@ class SREEnvironment:
                 and last.get("target_service") == action.target_service
             ):
                 repeated_action_penalty = 0.05
+
         invalid_penalty = 0.0 if result["valid"] else 0.25
 
+        # SILENCE_ALERT cleanup bonus: awarded when agent silences a fixed service
+        silence_bonus = 0.02 if result.get("silence_bonus") else 0.0
+
+        # Weights aligned across openenv.yaml and code:
+        #   health_delta       × 0.55
+        #   latency_delta      × 0.30
+        #   cost_efficiency    × 0.10   (negative for SCALE_UP)
+        #   invalid_penalty    × 0.10   (negative)
+        #   repeat_penalty     × 0.10   (negative, shared bucket with invalid)
+        #   silence_bonus      flat +0.02
         raw_reward = (
             health_delta * 0.55
-            + cost_efficiency * 0.10
             + latency_delta_norm * 0.30
-            - invalid_penalty * 0.30
+            + cost_efficiency * 0.10
+            - invalid_penalty * 0.10
             - repeated_action_penalty * 0.10
+            + silence_bonus
         )
         step_reward = round(max(-1.0, min(1.0, raw_reward)), 4)
 
@@ -101,6 +119,7 @@ class SREEnvironment:
                 "config_value": action.config_value,
                 "reason": action.reason,
                 "valid": result["valid"],
+                "silence_bonus": result.get("silence_bonus", False),
             }
         )
         self._state.observation = obs
@@ -115,7 +134,9 @@ class SREEnvironment:
                 health_delta=round(health_delta * 0.55, 4),
                 cost_efficiency=round(cost_efficiency * 0.10, 4),
                 latency_delta=round(latency_delta_norm * 0.30, 4),
-                invalid_penalty=round(-(invalid_penalty * 0.30 + repeated_action_penalty * 0.10), 4),
+                invalid_penalty=round(
+                    -(invalid_penalty * 0.10 + repeated_action_penalty * 0.10), 4
+                ),
             ),
         )
 
@@ -125,6 +146,7 @@ class SREEnvironment:
             "step": self._state.step,
             "action_valid": result["valid"],
             "action_details": result.get("details", ""),
+            "silence_bonus": result.get("silence_bonus", False),
         }
         return obs, reward, done, info
 
@@ -144,7 +166,7 @@ class SREEnvironment:
         if self._vdc is None:
             raise RuntimeError("Environment simulator is not initialized")
 
-        max_steps = {"easy": 15, "medium": 15, "hard": 20}[task_id]
+        max_steps = _MAX_STEPS[task_id]
         return Observation(
             step=step,
             max_steps=max_steps,

@@ -1,3 +1,19 @@
+---
+title: Cloud Chaos SRE
+emoji: ☁️
+colorFrom: blue
+colorTo: red
+sdk: docker
+pinned: false
+tags:
+  - openenv
+  - sre
+  - reinforcement-learning
+  - agent-evaluation
+  - infrastructure
+  - operations
+---
+
 # ☁️ Cloud Chaos SRE — OpenEnv Environment
 
 > An OpenEnv-compliant reinforcement learning environment that simulates a real-world **Site Reliability Engineer (SRE)** managing a virtual data centre under active production incidents.
@@ -600,20 +616,32 @@ Respond ONLY in valid JSON matching the Action schema. Do not include any other 
 
 ## Baseline Scores
 
-Scores produced by `inference.py` with deterministic settings (`temperature=0.0`, `seed=42`) and the current implementation. Values can vary slightly across runs/infrastructure.
+Scores produced by `inference.py` with deterministic settings (`temperature=0.0`, `seed=42`).
+All scores are **LLM-only** — no guardrails or hardcoded actions.
 
-| Task | Difficulty | Score | Steps used | Time (s) |
+| Task | Difficulty | Score | Steps used | Total time |
 |---|---|---|---|---|
-| The Detective | Easy | 0.4491 | 15 / 15 | ~5 |
-| The First Responder | Medium | 0.3553 | 15 / 15 | ~5 |
-| The Architect | Hard | 0.9775 | 20 / 20 | ~5 |
-| **Mean** | — | **0.5940** | — | **15.1** |
+| The Detective | Easy | **0.8989** | 15 / 15 | — |
+| The First Responder | Medium | **0.9501** | 15 / 15 | — |
+| The Architect | Hard | **0.5070** | 20 / 20 | — |
+| The Storm Chaser | Expert | **0.3867** | 25 / 25 | — |
+| **Mean** | — | **0.6857** | — | **459.7s** |
 
-Model: `llama-3.1-70b-versatile` · `API_BASE_URL`: `https://api.groq.com/openai/v1` · Seed: `42` · Temperature: `0.0`
+Model: `llama-3.3-70b-versatile` · `API_BASE_URL`: `https://api.groq.com/openai/v1` · Seed: `42` · Temperature: `0.0`
 
-> Full inference run completes well within the 20-minute judging limit. Judges can also hit the `/baseline` endpoint to trigger inference inline from the deployed HF Space.
+> Full inference run completed in **459.7s** — well within the 20-minute judging limit.
+> Hard and expert tasks encountered Groq free-tier daily token limits mid-run (100k TPD cap) and
+> finished with fallback `CHECK_LOGS` actions for remaining steps. Scores would be higher with
+> a paid-tier key or a smaller model like `llama-3.1-8b-instant`.
 
-The hard-task score is intentionally supported by deterministic guardrails to keep evaluations reproducible under inference API variability.
+### Recommended model for judges
+
+Use `llama-3.3-70b-versatile` via Groq (free, no credit card required):
+```bash
+export OPENAI_API_KEY=gsk_your_groq_key
+export API_BASE_URL=https://api.groq.com/openai/v1
+export MODEL_NAME=llama-3.3-70b-versatile
+```
 
 ### Failure Modes and Hardness Notes
 

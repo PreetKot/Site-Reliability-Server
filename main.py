@@ -1,22 +1,32 @@
+import json
+import sys
+import threading
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from pathlib import Path
-import sys
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from env.data_generator import generate_all_scenarios
 from env.environment import SREEnvironment
 from env.models import Action, EpisodeState
+from env.tasks import TASKS as TASK_LIST
 
 env = SREEnvironment()
+
+# In-memory leaderboard — tracks best score per task across all sessions.
+_leaderboard_lock = threading.Lock()
+_leaderboard: dict[str, list[dict]] = defaultdict(list)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _ = app
     scenarios_root = Path("scenarios")
-    required_tasks = ["easy", "medium", "hard"]
+    required_tasks = ["easy", "medium", "hard", "expert"]
     should_generate = False
 
     for task in required_tasks:
@@ -32,7 +42,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Cloud Chaos SRE",
-    description="OpenEnv environment simulating SRE incident response",
+    description="OpenEnv environment simulating SRE incident response across 6 interdependent microservices.",
+    version="1.1.0",
     lifespan=lifespan,
 )
 
@@ -43,11 +54,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Serve static landing page
+_STATIC_DIR = Path(__file__).parent / "static"
+if _STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
+
+# ------------------------------------------------------------------
+# Landing page
+# ------------------------------------------------------------------
+
+@app.get("/", include_in_schema=False)
+def root():
+    index = _STATIC_DIR / "index.html"
+    if index.exists():
+        return FileResponse(str(index))
+    return {"env": "cloud-chaos-sre", "version": "1.1.0", "docs": "/docs"}
+
+
+# ------------------------------------------------------------------
+# Health
+# ------------------------------------------------------------------
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "env": "cloud-chaos-sre", "version": "1.0.0"}
+    return {"status": "ok", "env": "cloud-chaos-sre", "version": "1.1.0"}
 
+
+# ------------------------------------------------------------------
+# Standard OpenEnv endpoints
+# ------------------------------------------------------------------
 
 @app.post("/reset")
 def reset(body: dict):
@@ -73,48 +109,76 @@ def state():
     return env.state().model_dump()
 
 
+# ------------------------------------------------------------------
+# Tasks
+# ------------------------------------------------------------------
+
 @app.get("/tasks")
 def tasks():
     return {
         "tasks": [
             {
-                "id": "easy",
-                "name": "The Detective",
-                "difficulty": "easy",
-                "description": "Identify the root-cause microservice in a cascading failure",
-                "max_steps": 15,
+                **task,
                 "action_schema": Action.model_json_schema(),
-            },
-            {
-                "id": "medium",
-                "name": "The First Responder",
-                "difficulty": "medium",
-                "description": "Restore all system health metrics during a traffic spike",
-                "max_steps": 15,
-                "action_schema": Action.model_json_schema(),
-            },
-            {
-                "id": "hard",
-                "name": "The Architect",
-                "difficulty": "hard",
-                "description": "Diagnose and fix a hidden database timeout misconfiguration",
-                "max_steps": 20,
-                "action_schema": Action.model_json_schema(),
-            },
+            }
+            for task in TASK_LIST
         ]
     }
 
 
-@app.post("/grader")
-def grader(state: EpisodeState):
-    env._state = state
-    score, breakdown = env.grade()
-    return {"task_id": state.task_id, "score": score, "breakdown": breakdown}
+# ------------------------------------------------------------------
+# Grader
+# ------------------------------------------------------------------
 
+@app.post("/grader")
+def grader(episode_state: EpisodeState):
+    env._state = episode_state
+    score, breakdown = env.grade()
+
+    # Record on leaderboard
+    with _leaderboard_lock:
+        _leaderboard[episode_state.task_id].append(
+            {
+                "score": score,
+                "steps": episode_state.step,
+                "scenario_id": episode_state.scenario_id,
+            }
+        )
+
+    return {"task_id": episode_state.task_id, "score": score, "breakdown": breakdown}
+
+
+# ------------------------------------------------------------------
+# Leaderboard
+# ------------------------------------------------------------------
+
+@app.get("/metrics")
+def metrics():
+    """
+    Returns the best-ever score and mean score per task across all grader calls
+    in this server session. Useful for real-time evaluation dashboards.
+    """
+    result: dict[str, dict] = {}
+    with _leaderboard_lock:
+        for task_id, entries in _leaderboard.items():
+            if not entries:
+                continue
+            scores = [e["score"] for e in entries]
+            result[task_id] = {
+                "runs": len(entries),
+                "best_score": round(max(scores), 4),
+                "mean_score": round(sum(scores) / len(scores), 4),
+                "last_score": round(scores[-1], 4),
+            }
+    return {"leaderboard": result, "total_runs": sum(len(v) for v in _leaderboard.values())}
+
+
+# ------------------------------------------------------------------
+# Baseline trigger
+# ------------------------------------------------------------------
 
 @app.post("/baseline")
 def baseline():
-    import json
     import subprocess
     import time
 
@@ -131,7 +195,7 @@ def baseline():
         return {
             "ok": False,
             "error": "inference_timeout",
-            "message": "inference.py exceeded 19 minute timeout",
+            "message": "inference.py exceeded 19-minute timeout",
             "stdout_tail": (exc.stdout or "")[-1200:],
             "stderr_tail": (exc.stderr or "")[-1200:],
             "total_time_s": round(time.time() - start, 1),
@@ -158,7 +222,7 @@ def baseline():
         return {
             "ok": False,
             "error": "invalid_inference_json",
-            "message": "Could not parse JSON output from inference.py",
+            "message": "Could not parse JSON from inference.py output",
             "stdout_tail": (result.stdout or "")[-1200:],
             "stderr_tail": (result.stderr or "")[-1200:],
             "total_time_s": elapsed,

@@ -1,24 +1,24 @@
 {
-  "scenario_id": "easy-009",
-  "task_id": "easy",
+  "scenario_id": "expert-001",
+  "task_id": "expert",
   "initial_state": {
     "api-gateway": {
       "cpu_pct": 40.0,
       "mem_pct": 50.0,
-      "error_rate": 0.055,
-      "latency_ms": 226.66
+      "error_rate": 0.001,
+      "latency_ms": 110.0
     },
     "auth-service": {
       "cpu_pct": 38.0,
       "mem_pct": 45.0,
-      "error_rate": 0.001,
-      "latency_ms": 95.0
+      "error_rate": 0.0536,
+      "latency_ms": 832.37
     },
     "user-service": {
       "cpu_pct": 42.0,
       "mem_pct": 52.0,
-      "error_rate": 0.001,
-      "latency_ms": 120.0
+      "error_rate": 0.084,
+      "latency_ms": 669.32
     },
     "order-service": {
       "cpu_pct": 44.0,
@@ -27,16 +27,16 @@
       "latency_ms": 130.0
     },
     "db-proxy": {
-      "cpu_pct": 36.0,
-      "mem_pct": 42.0,
-      "error_rate": 0.001,
-      "latency_ms": 50.0
+      "cpu_pct": 85.13,
+      "mem_pct": 82.87,
+      "error_rate": 0.314,
+      "latency_ms": 1131.15
     },
     "cache-service": {
-      "cpu_pct": 84.4,
-      "mem_pct": 88.89,
-      "error_rate": 0.4087,
-      "latency_ms": 1700.2
+      "cpu_pct": 86.62,
+      "mem_pct": 86.76,
+      "error_rate": 0.3888,
+      "latency_ms": 1286.26
     }
   },
   "initial_config": {
@@ -51,21 +51,34 @@
       "timestamp": "2025-01-01T00:00:00Z",
       "service": "cache-service",
       "changes": {
-        "pool_size": 10
+        "ttl": 300
       }
     },
     {
       "deploy_id": "d002",
-      "timestamp": "2025-01-01T01:00:00Z",
+      "timestamp": "2025-01-01T00:30:00Z",
       "service": "cache-service",
       "changes": {
-        "pool_size": 7
+        "pool_size": 4
+      }
+    },
+    {
+      "deploy_id": "d003",
+      "timestamp": "2025-01-01T01:00:00Z",
+      "service": "db-proxy",
+      "changes": {
+        "replica_count": 1
       }
     }
   ],
   "ground_truth": {
     "root_cause_service": "cache-service",
+    "secondary_cause_service": "db-proxy",
     "correct_action": "RESTART_SERVICE",
+    "correct_order": [
+      "cache-service",
+      "db-proxy"
+    ],
     "correct_config_key": null,
     "correct_config_value": null
   }

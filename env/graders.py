@@ -5,7 +5,12 @@ def _load_ground_truth(state: EpisodeState) -> dict:
     import json
     from pathlib import Path
 
-    scenario_path = Path(__file__).parent.parent / "scenarios" / state.task_id / f"{state.scenario_id}.json"
+    scenario_path = (
+        Path(__file__).parent.parent
+        / "scenarios"
+        / state.task_id
+        / f"{state.scenario_id}.json"
+    )
     if not scenario_path.exists():
         return {}
     try:
@@ -19,10 +24,14 @@ def grade_easy(state: EpisodeState) -> tuple[float, dict]:
     """
     Task 1 — The Detective.
     Score breakdown:
-      - Correct root service in any action's reason field: 0.40
+      - Correct root service targeted with a diagnostic or remediation action: 0.40
       - Zero false-positive restarts (healthy services restarted): 0.30
       - System health restored (mean health score >= 0.85): 0.20
       - Efficiency bonus (done in <= 8 steps): 0.10
+
+    Grader requires BOTH the `reason` field to mention the root service AND
+    at least one action targeting that service (CHECK_LOGS, INSPECT_SERVICE,
+    or RESTART_SERVICE) — simple string-matching on reason alone is insufficient.
     """
     root_cause = _load_ground_truth(state).get("root_cause_service", "db-proxy")
 
@@ -33,16 +42,35 @@ def grade_easy(state: EpisodeState) -> tuple[float, dict]:
         "efficiency": 0.0,
     }
 
+    # Require: (a) reason text mentions the root service AND
+    #          (b) an action actually targets the root service.
+    DIAGNOSTIC_ACTIONS = {"CHECK_LOGS", "INSPECT_SERVICE", "RESTART_SERVICE"}
+    root_mentioned_in_reason = False
+    root_targeted_correctly = False
+
     for action in state.action_history:
         reason = (action.get("reason") or "").lower()
-        if root_cause.replace("-", "") in reason or root_cause in reason:
-            breakdown["root_identified"] = 0.40
-            break
+        target = action.get("target_service", "")
+        action_type = action.get("action_type", "")
 
+        if root_cause.replace("-", "") in reason or root_cause in reason:
+            root_mentioned_in_reason = True
+
+        if target == root_cause and action_type in DIAGNOSTIC_ACTIONS:
+            root_targeted_correctly = True
+
+    if root_mentioned_in_reason and root_targeted_correctly:
+        breakdown["root_identified"] = 0.40
+    elif root_targeted_correctly:
+        # Partial credit: targeted correctly but didn't explain why
+        breakdown["root_identified"] = 0.20
+
+    # False positives: RESTART_SERVICE on a service that is NOT the root cause
     false_positives = sum(
         1
         for action in state.action_history
-        if action.get("action_type") == "RESTART_SERVICE" and action.get("target_service") != root_cause
+        if action.get("action_type") == "RESTART_SERVICE"
+        and action.get("target_service") != root_cause
     )
     breakdown["no_false_positives"] = max(0.0, 0.30 - (false_positives * 0.10))
 
@@ -113,10 +141,12 @@ def grade_hard(state: EpisodeState) -> tuple[float, dict]:
     """
     Task 3 — The Architect.
     Score breakdown:
-      - Correct config key identified (UPDATE_CONFIG with db_timeout): 0.30
-      - Correct config value applied (5000): 0.40
-      - System health restored (overall >= 0.80): 0.10
-      - Efficiency (found fix in <= 10 steps): 0.20
+      - Diagnosis actions on db-proxy (CHECK_LOGS/INSPECT_SERVICE): 0.15
+      - Correct config key identified (UPDATE_CONFIG with db_timeout): 0.25
+      - Correct config value applied (5000): 0.35
+      - Value-progress milestone (partial credit for plausible value range): up to 0.20
+      - System health restored (overall >= 0.80): up to 0.03
+      - Efficiency bonus (correct fix by step <= 10): 0.02
     """
     expected = _load_ground_truth(state)
     correct_key = expected.get("correct_config_key", "db_timeout")
@@ -168,7 +198,6 @@ def grade_hard(state: EpisodeState) -> tuple[float, dict]:
         components["efficiency"] = 0.02
 
     breakdown: dict[str, object] = dict(components)
-
     breakdown["scenario_expected_key"] = str(correct_key)
     breakdown["scenario_expected_value"] = int(correct_value)
     breakdown["update_actions_attempted"] = sum(
@@ -179,8 +208,79 @@ def grade_hard(state: EpisodeState) -> tuple[float, dict]:
     return round(min(1.0, score), 4), breakdown
 
 
+def grade_expert(state: EpisodeState) -> tuple[float, dict]:
+    """
+    Task 4 — The Storm Chaser.
+    Dual-service cascading failure: both cache-service AND db-proxy are degraded.
+    The correct fix order is: RESTART cache-service FIRST, then RESTART db-proxy.
+    Fixing db-proxy first does not cascade to heal cache-service.
+
+    Score breakdown:
+      - cache-service restarted before db-proxy: 0.25
+      - db-proxy restarted (in any order): 0.20
+      - System health restored (overall >= 0.85): 0.30
+      - No unnecessary restarts of healthy services (api-gateway, auth, user, order): 0.15
+      - Efficiency bonus (healed in <= 12 steps): 0.10
+    """
+    components: dict[str, float] = {
+        "correct_order": 0.0,
+        "db_restarted": 0.0,
+        "health_restored": 0.0,
+        "no_collateral": 0.0,
+        "efficiency": 0.0,
+    }
+
+    SIDE_SERVICES = {"api-gateway", "auth-service", "user-service", "order-service"}
+
+    restart_order: list[str] = [
+        action["target_service"]
+        for action in state.action_history
+        if action.get("action_type") == "RESTART_SERVICE"
+    ]
+
+    cache_idx = next(
+        (i for i, s in enumerate(restart_order) if s == "cache-service"), None
+    )
+    db_idx = next(
+        (i for i, s in enumerate(restart_order) if s == "db-proxy"), None
+    )
+
+    if cache_idx is not None and db_idx is not None and cache_idx < db_idx:
+        components["correct_order"] = 0.25
+    elif cache_idx is not None:
+        # Restarted cache but not db, or in wrong order — partial
+        components["correct_order"] = 0.10
+
+    if db_idx is not None:
+        components["db_restarted"] = 0.20
+
+    final_health = state.observation.health_summary.overall
+    components["health_restored"] = round(min(0.30, final_health * 0.30), 4)
+
+    collateral_restarts = sum(
+        1
+        for action in state.action_history
+        if action.get("action_type") == "RESTART_SERVICE"
+        and action.get("target_service") in SIDE_SERVICES
+    )
+    components["no_collateral"] = max(0.0, 0.15 - collateral_restarts * 0.05)
+
+    if state.step <= 12 and final_health >= 0.85:
+        components["efficiency"] = 0.10
+
+    breakdown: dict[str, object] = dict(components)
+    breakdown["restart_order"] = restart_order
+    breakdown["cache_restarted_first"] = (
+        cache_idx is not None and db_idx is not None and cache_idx < db_idx
+    )
+
+    score = sum(components.values())
+    return round(min(1.0, score), 4), breakdown
+
+
 GRADERS = {
     "easy": grade_easy,
     "medium": grade_medium,
     "hard": grade_hard,
+    "expert": grade_expert,
 }

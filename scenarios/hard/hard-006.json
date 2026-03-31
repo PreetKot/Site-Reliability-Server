@@ -3,47 +3,49 @@
   "task_id": "hard",
   "initial_state": {
     "api-gateway": {
-      "cpu_pct": 45.0,
-      "mem_pct": 55.0,
-      "error_rate": 0.001,
-      "latency_ms": 120.0
-    },
-    "auth-service": {
       "cpu_pct": 40.0,
       "mem_pct": 50.0,
-      "error_rate": 0.2652,
-      "latency_ms": 2088.0
+      "error_rate": 0.001,
+      "latency_ms": 110.0
+    },
+    "auth-service": {
+      "cpu_pct": 38.0,
+      "mem_pct": 45.0,
+      "error_rate": 0.4314,
+      "latency_ms": 2204.66
     },
     "user-service": {
-      "cpu_pct": 72.0,
-      "mem_pct": 68.0,
-      "error_rate": 0.3253,
-      "latency_ms": 2471.42
+      "cpu_pct": 42.0,
+      "mem_pct": 52.0,
+      "error_rate": 0.416,
+      "latency_ms": 1581.29
     },
     "order-service": {
-      "cpu_pct": 70.0,
-      "mem_pct": 65.0,
-      "error_rate": 0.5059,
-      "latency_ms": 1907.57
+      "cpu_pct": 44.0,
+      "mem_pct": 54.0,
+      "error_rate": 0.2846,
+      "latency_ms": 1349.85
     },
     "db-proxy": {
-      "cpu_pct": 90.78,
-      "mem_pct": 75.66,
-      "error_rate": 0.2967,
-      "latency_ms": 1556.98
+      "cpu_pct": 82.65,
+      "mem_pct": 84.51,
+      "error_rate": 0.2807,
+      "latency_ms": 1986.24
     },
     "cache-service": {
-      "cpu_pct": 30.0,
-      "mem_pct": 35.0,
+      "cpu_pct": 28.0,
+      "mem_pct": 32.0,
       "error_rate": 0.001,
-      "latency_ms": 15.0
+      "latency_ms": 12.0
     }
   },
   "initial_config": {
     "db_timeout": 100,
-    "pool_size": 12,
+    "pool_size": 8,
     "replica_count": 1,
-    "ttl": 360
+    "ttl": 240,
+    "retry_count": 1,
+    "connection_pool": 4
   },
   "deploy_history": [
     {
@@ -51,7 +53,7 @@
       "timestamp": "2025-01-01T00:00:00Z",
       "service": "db-proxy",
       "changes": {
-        "pool_size": 12
+        "pool_size": 10
       }
     },
     {
@@ -59,7 +61,8 @@
       "timestamp": "2025-01-01T01:00:00Z",
       "service": "db-proxy",
       "changes": {
-        "db_timeout": 100
+        "db_timeout": 100,
+        "retry_count": 1
       }
     },
     {
@@ -67,7 +70,8 @@
       "timestamp": "2025-01-01T02:00:00Z",
       "service": "db-proxy",
       "changes": {
-        "ttl": 360
+        "connection_pool": 4,
+        "ttl": 240
       }
     }
   ],

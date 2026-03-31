@@ -3,47 +3,49 @@
   "task_id": "hard",
   "initial_state": {
     "api-gateway": {
-      "cpu_pct": 45.0,
-      "mem_pct": 55.0,
-      "error_rate": 0.001,
-      "latency_ms": 120.0
-    },
-    "auth-service": {
       "cpu_pct": 40.0,
       "mem_pct": 50.0,
-      "error_rate": 0.5197,
-      "latency_ms": 1494.11
+      "error_rate": 0.001,
+      "latency_ms": 110.0
+    },
+    "auth-service": {
+      "cpu_pct": 38.0,
+      "mem_pct": 45.0,
+      "error_rate": 0.5299,
+      "latency_ms": 2561.07
     },
     "user-service": {
-      "cpu_pct": 72.0,
-      "mem_pct": 68.0,
-      "error_rate": 0.4888,
-      "latency_ms": 2404.98
+      "cpu_pct": 42.0,
+      "mem_pct": 52.0,
+      "error_rate": 0.2625,
+      "latency_ms": 1710.51
     },
     "order-service": {
-      "cpu_pct": 70.0,
-      "mem_pct": 65.0,
-      "error_rate": 0.3425,
-      "latency_ms": 2458.57
+      "cpu_pct": 44.0,
+      "mem_pct": 54.0,
+      "error_rate": 0.4158,
+      "latency_ms": 1801.7
     },
     "db-proxy": {
-      "cpu_pct": 83.24,
-      "mem_pct": 76.54,
-      "error_rate": 0.3994,
-      "latency_ms": 2460.96
+      "cpu_pct": 80.52,
+      "mem_pct": 80.37,
+      "error_rate": 0.3769,
+      "latency_ms": 2200.32
     },
     "cache-service": {
-      "cpu_pct": 30.0,
-      "mem_pct": 35.0,
+      "cpu_pct": 28.0,
+      "mem_pct": 32.0,
       "error_rate": 0.001,
-      "latency_ms": 15.0
+      "latency_ms": 12.0
     }
   },
   "initial_config": {
     "db_timeout": 100,
     "pool_size": 8,
     "replica_count": 1,
-    "ttl": 240
+    "ttl": 300,
+    "retry_count": 1,
+    "connection_pool": 5
   },
   "deploy_history": [
     {
@@ -59,7 +61,8 @@
       "timestamp": "2025-01-01T01:00:00Z",
       "service": "db-proxy",
       "changes": {
-        "db_timeout": 100
+        "db_timeout": 100,
+        "retry_count": 1
       }
     },
     {
@@ -67,7 +70,8 @@
       "timestamp": "2025-01-01T02:00:00Z",
       "service": "db-proxy",
       "changes": {
-        "ttl": 240
+        "connection_pool": 5,
+        "ttl": 300
       }
     }
   ],

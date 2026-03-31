@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>☁️ Cloud Chaos SRE — OpenEnv Environment</title>
+  <meta name="description" content="An OpenEnv reinforcement-learning environment simulating real-world SRE incident response across six interdependent microservices." />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0d0f14;
+      --surface: #161a22;
+      --surface2: #1e2330;
+      --border: #2a3040;
+      --accent: #3b82f6;
+      --accent2: #6366f1;
+      --green: #22c55e;
+      --yellow: #eab308;
+      --red: #ef4444;
+      --orange: #f97316;
+      --text: #e2e8f0;
+      --muted: #64748b;
+      --radius: 12px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ---- Animated grid background ---- */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(59,130,246,0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(59,130,246,0.04) 1px, transparent 1px);
+      background-size: 40px 40px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    header {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      padding: 72px 24px 48px;
+      background: radial-gradient(ellipse 80% 60% at 50% 0%, rgba(59,130,246,0.15) 0%, transparent 70%);
+    }
+    .badge-row { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-bottom: 24px; }
+    .badge {
+      font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 20px;
+      border: 1px solid var(--border); background: var(--surface); color: var(--muted);
+      letter-spacing: 0.5px; text-transform: uppercase;
+    }
+    .badge.blue { border-color: var(--accent); color: var(--accent); }
+    .badge.green { border-color: var(--green); color: var(--green); }
+    h1 {
+      font-size: clamp(2rem, 5vw, 3.5rem);
+      font-weight: 700;
+      background: linear-gradient(135deg, #e2e8f0 0%, #3b82f6 60%, #6366f1 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 16px;
+      line-height: 1.1;
+    }
+    .subtitle {
+      font-size: 1.1rem;
+      color: var(--muted);
+      max-width: 600px;
+      margin: 0 auto 36px;
+      line-height: 1.6;
+    }
+    .cta-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 12px 24px; border-radius: 8px; font-size: 14px; font-weight: 600;
+      text-decoration: none; cursor: pointer; border: none; transition: all 0.2s;
+    }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: #2563eb; transform: translateY(-1px); }
+    .btn-outline { background: transparent; color: var(--text); border: 1px solid var(--border); }
+    .btn-outline:hover { border-color: var(--accent); color: var(--accent); transform: translateY(-1px); }
+
+    main { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; padding: 0 24px 80px; }
+
+    /* ---- Stat cards ---- */
+    .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 56px; }
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      text-align: center;
+      transition: border-color 0.2s, transform 0.2s;
+    }
+    .stat-card:hover { border-color: var(--accent2); transform: translateY(-2px); }
+    .stat-value { font-size: 2rem; font-weight: 700; color: var(--accent); margin-bottom: 4px; }
+    .stat-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+
+    /* ---- Section headers ---- */
+    .section-title {
+      font-size: 1.4rem; font-weight: 600; margin-bottom: 20px;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .section-title::after {
+      content: ''; flex: 1; height: 1px; background: var(--border);
+    }
+
+    /* ---- Task cards ---- */
+    .task-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-bottom: 56px; }
+    .task-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      transition: all 0.2s;
+      position: relative;
+      overflow: hidden;
+    }
+    .task-card::before {
+      content: '';
+      position: absolute; top: 0; left: 0; right: 0; height: 3px;
+    }
+    .task-card.easy::before { background: var(--green); }
+    .task-card.medium::before { background: var(--yellow); }
+    .task-card.hard::before { background: var(--orange); }
+    .task-card.expert::before { background: var(--red); }
+    .task-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+    .task-name { font-size: 1rem; font-weight: 600; margin-bottom: 4px; }
+    .task-id { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted); margin-bottom: 10px; }
+    .task-desc { font-size: 13px; color: var(--muted); line-height: 1.5; margin-bottom: 12px; }
+    .task-meta { display: flex; gap: 12px; font-size: 12px; color: var(--muted); }
+    .pill { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+    .pill.easy { background: rgba(34,197,94,0.15); color: var(--green); }
+    .pill.medium { background: rgba(234,179,8,0.15); color: var(--yellow); }
+    .pill.hard { background: rgba(249,115,22,0.15); color: var(--orange); }
+    .pill.expert { background: rgba(239,68,68,0.15); color: var(--red); }
+
+    /* ---- Live leaderboard ---- */
+    #leaderboard { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 28px; margin-bottom: 56px; }
+    .lb-row { display: flex; align-items: center; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+    .lb-row:last-child { border: none; }
+    .lb-task { font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600; width: 80px; }
+    .lb-bar-wrap { flex: 1; background: var(--surface2); border-radius: 4px; height: 8px; overflow: hidden; }
+    .lb-bar { height: 100%; border-radius: 4px; transition: width 0.6s ease; background: var(--accent); }
+    .lb-score { font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 600; width: 52px; text-align: right; }
+    .lb-runs { font-size: 11px; color: var(--muted); width: 60px; text-align: right; }
+    #lb-status { font-size: 12px; color: var(--muted); text-align: center; margin-top: 12px; }
+
+    /* ---- API quick reference ---- */
+    .api-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin-bottom: 56px; }
+    .api-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 18px; display: flex; align-items: flex-start; gap: 14px;
+      transition: border-color 0.2s;
+    }
+    .api-card:hover { border-color: var(--accent2); }
+    .method {
+      font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600;
+      padding: 3px 7px; border-radius: 4px; white-space: nowrap; margin-top: 1px;
+    }
+    .method.get { background: rgba(34,197,94,0.15); color: var(--green); }
+    .method.post { background: rgba(59,130,246,0.15); color: var(--accent); }
+    .api-path { font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+    .api-desc { font-size: 12px; color: var(--muted); }
+
+    .copy-block {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 20px 24px; margin-bottom: 56px; position: relative;
+    }
+    .copy-block pre { font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.7; color: #94a3b8; overflow-x: auto; }
+    .copy-block .highlight { color: var(--accent); }
+
+    footer { text-align: center; padding: 24px; color: var(--muted); font-size: 12px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="badge-row">
+    <span class="badge blue">OpenEnv</span>
+    <span class="badge green">4 Tasks</span>
+    <span class="badge">SRE</span>
+    <span class="badge">Reinforcement Learning</span>
+    <span class="badge">FastAPI</span>
+  </div>
+  <h1>☁️ Cloud Chaos SRE</h1>
+  <p class="subtitle">
+    An OpenEnv environment where AI agents diagnose and remediate real-world SRE incidents
+    across six interdependent microservices — with stochastic drift, cascading failures,
+    and meaningful partial-credit rewards.
+  </p>
+  <div class="cta-row">
+    <a href="/docs" class="btn btn-primary">📖 API Docs</a>
+    <a href="/tasks" class="btn btn-outline">📋 View Tasks</a>
+    <a href="/health" class="btn btn-outline">❤️ Health</a>
+    <a href="/metrics" class="btn btn-outline">📊 Leaderboard</a>
+  </div>
+</header>
+
+<main>
+
+  <div class="stat-grid">
+    <div class="stat-card"><div class="stat-value">6</div><div class="stat-label">Microservices</div></div>
+    <div class="stat-card"><div class="stat-value">4</div><div class="stat-label">Tasks</div></div>
+    <div class="stat-card"><div class="stat-value">40</div><div class="stat-label">Scenarios</div></div>
+    <div class="stat-card"><div class="stat-value">8</div><div class="stat-label">Action Types</div></div>
+    <div class="stat-card"><div class="stat-value">4</div><div class="stat-label">Reward Signals</div></div>
+  </div>
+
+  <div class="section-title">Tasks</div>
+  <div class="task-grid">
+    <div class="task-card easy">
+      <div class="task-name">🔍 The Detective</div>
+      <div class="task-id">task_id: easy · max 15 steps</div>
+      <div class="task-desc">Identify the single root-cause microservice in a cascading failure. Use dependency tracing, not brute-force restarts.</div>
+      <div class="task-meta"><span class="pill easy">Easy</span><span>10 scenarios</span></div>
+    </div>
+    <div class="task-card medium">
+      <div class="task-name">🚨 The First Responder</div>
+      <div class="task-id">task_id: medium · max 15 steps</div>
+      <div class="task-desc">Restore all four system health metrics during an active traffic spike. SCALE_UP alone is insufficient.</div>
+      <div class="task-meta"><span class="pill medium">Medium</span><span>10 scenarios</span></div>
+    </div>
+    <div class="task-card hard">
+      <div class="task-name">🏗️ The Architect</div>
+      <div class="task-id">task_id: hard · max 20 steps</div>
+      <div class="task-desc">Diagnose a hidden `db_timeout` misconfiguration buried among red-herring deploys. UPDATE_CONFIG is the only fix.</div>
+      <div class="task-meta"><span class="pill hard">Hard</span><span>10 scenarios</span></div>
+    </div>
+    <div class="task-card expert">
+      <div class="task-name">🌪️ The Storm Chaser</div>
+      <div class="task-id">task_id: expert · max 25 steps</div>
+      <div class="task-desc">Dual-service failure: cache-service and db-proxy are both degraded. Fix order matters — wrong sequence leaves the system broken.</div>
+      <div class="task-meta"><span class="pill expert">Expert</span><span>10 scenarios</span></div>
+    </div>
+  </div>
+
+  <div class="section-title">Live Leaderboard</div>
+  <div id="leaderboard">
+    <div id="lb-rows">
+      <div style="color:var(--muted);font-size:13px;text-align:center;padding:16px 0;">
+        Loading scores from <code>/metrics</code>…
+      </div>
+    </div>
+    <div id="lb-status"></div>
+  </div>
+
+  <div class="section-title">API Quick Reference</div>
+  <div class="api-grid">
+    <div class="api-card"><span class="method post">POST</span><div><div class="api-path">/reset</div><div class="api-desc">Start new episode. Body: <code>{"task_id":"easy"}</code></div></div></div>
+    <div class="api-card"><span class="method post">POST</span><div><div class="api-path">/step</div><div class="api-desc">Submit one action, advance simulation one step</div></div></div>
+    <div class="api-card"><span class="method get">GET</span><div><div class="api-path">/state</div><div class="api-desc">Retrieve full current episode state</div></div></div>
+    <div class="api-card"><span class="method post">POST</span><div><div class="api-path">/grader</div><div class="api-desc">Score a completed episode, update leaderboard</div></div></div>
+    <div class="api-card"><span class="method get">GET</span><div><div class="api-path">/tasks</div><div class="api-desc">List all tasks with schemas and difficulty</div></div></div>
+    <div class="api-card"><span class="method get">GET</span><div><div class="api-path">/metrics</div><div class="api-desc">Best / mean / last score per task (leaderboard)</div></div></div>
+    <div class="api-card"><span class="method post">POST</span><div><div class="api-path">/baseline</div><div class="api-desc">Trigger inference.py inline; returns scored results</div></div></div>
+    <div class="api-card"><span class="method get">GET</span><div><div class="api-path">/health</div><div class="api-desc">Health check — returns <code>{"status":"ok"}</code></div></div></div>
+  </div>
+
+  <div class="section-title">Quick Start</div>
+  <div class="copy-block">
+    <pre><span class="highlight"># 1. Start an easy episode</span>
+curl -X POST /reset -H "Content-Type: application/json" \
+  -d '{"task_id": "easy"}'
+
+<span class="highlight"># 2. Check db-proxy logs</span>
+curl -X POST /step -H "Content-Type: application/json" \
+  -d '{"action_type":"CHECK_LOGS","target_service":"db-proxy","reason":"Investigating errors"}'
+
+<span class="highlight"># 3. Restart the root-cause service</span>
+curl -X POST /step -H "Content-Type: application/json" \
+  -d '{"action_type":"RESTART_SERVICE","target_service":"db-proxy","reason":"db-proxy is root cause"}'
+
+<span class="highlight"># 4. Grade the episode</span>
+curl -X POST /grader -H "Content-Type: application/json" -d "$(curl -s /state)"</pre>
+  </div>
+
+</main>
+
+<footer>
+  Cloud Chaos SRE · OpenEnv v1.1.0 · MIT License ·
+  <a href="/docs" style="color:var(--accent);text-decoration:none;">API Docs</a>
+</footer>
+
+<script>
+  async function loadLeaderboard() {
+    try {
+      const res = await fetch('/metrics');
+      const data = await res.json();
+      const lb = data.leaderboard || {};
+      const tasks = ['easy','medium','hard','expert'];
+      const labels = { easy:'🔍 easy', medium:'🚨 medium', hard:'🏗️ hard', expert:'🌪️ expert' };
+
+      if (!Object.keys(lb).length) {
+        document.getElementById('lb-rows').innerHTML =
+          '<div style="color:var(--muted);font-size:13px;text-align:center;padding:16px 0;">No runs yet — call <code>/grader</code> to populate.</div>';
+        return;
+      }
+
+      let html = '';
+      for (const t of tasks) {
+        const row = lb[t];
+        if (!row) continue;
+        const pct = Math.round(row.best_score * 100);
+        html += `<div class="lb-row">
+          <div class="lb-task">${labels[t]}</div>
+          <div class="lb-bar-wrap"><div class="lb-bar" style="width:${pct}%"></div></div>
+          <div class="lb-score">${row.best_score.toFixed(4)}</div>
+          <div class="lb-runs">${row.runs} run${row.runs > 1 ? 's' : ''}</div>
+        </div>`;
+      }
+      document.getElementById('lb-rows').innerHTML = html || '<div style="color:var(--muted);font-size:13px;text-align:center;padding:16px 0;">No data yet.</div>';
+      document.getElementById('lb-status').textContent =
+        `${data.total_runs} total grader call${data.total_runs !== 1 ? 's' : ''} · refreshing every 30 s`;
+    } catch(e) {
+      document.getElementById('lb-status').textContent = 'Could not load leaderboard.';
+    }
+  }
+
+  loadLeaderboard();
+  setInterval(loadLeaderboard, 30000);
+</script>
+</body>
+</html>

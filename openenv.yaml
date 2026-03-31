@@ -1,5 +1,5 @@
 name: cloud-chaos-sre
-version: 1.0.0
+version: 1.1.0
 description: >
   An OpenEnv environment simulating a Site Reliability Engineer managing
   a virtual data centre under active production incidents. The agent must
@@ -7,7 +7,7 @@ description: >
   misconfigurations across six interdependent microservices.
 author:
   name: Cloud Chaos SRE Team
-  email: your@email.com
+  email: cloudchaossre@protonmail.com
 
 tasks:
   - id: easy
@@ -25,11 +25,21 @@ tasks:
     difficulty: hard
     description: Diagnose and fix a hidden database timeout misconfiguration
     max_steps: 20
+  - id: expert
+    name: The Storm Chaser
+    difficulty: expert
+    description: >
+      Resolve a dual-service cascading failure where a network partition
+      has split the data layer. Two services must be fixed in the correct
+      causal order — fixing the wrong one first leaves the system degraded.
+    max_steps: 25
 
 observation_space:
   type: object
   properties:
     step: { type: integer }
+    max_steps: { type: integer }
+    task_id: { type: string, enum: [easy, medium, hard, expert] }
     metrics: { type: object, description: "Per-service CPU, memory, error rate, latency" }
     logs: { type: array, description: "Last 10 structured log entries" }
     deploy_history: { type: array, description: "Last 5 deployment events with config diffs" }
@@ -61,12 +71,13 @@ reward:
   min: -1.0
   max: 1.0
   description: >
-    Non-sparse per-step reward. Components: health improvement delta (x0.50),
-    cost efficiency (x0.20), latency worsening penalty (x0.20),
-    invalid action penalty (x0.10).
+    Non-sparse per-step reward. Components: health improvement delta (x0.55),
+    latency improvement delta (x0.30), cost efficiency penalty for SCALE_UP (x0.10),
+    invalid/repeated-action penalty (x0.10). Plus a +0.02 bonus for silencing
+    an alert after its root cause has been fixed.
 
 episode:
-  max_steps: 20
+  max_steps: 25
   termination_conditions:
     - All health metrics below threshold (success)
     - Max steps reached (partial credit)
@@ -79,3 +90,5 @@ tags:
   - nlp
   - agent-evaluation
   - operations
+  - incident-response
+  - microservices
