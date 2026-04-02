@@ -270,6 +270,31 @@ export LOCAL_IMAGE_NAME=<image_name_if_you_use_local_images>
 export OPENENV_BASE_URL=http://127.0.0.1:7860
 ```
 
+### How Authentication Works
+
+The environment server itself requires no API keys — it is a pure
+simulation with no external dependencies. Keys are only needed by
+`inference.py` to make LLM calls to the Hugging Face router.
+
+Before running `inference.py`, export your token in the shell:
+```bash
+export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxx
+export API_BASE_URL=https://router.huggingface.co/v1
+export MODEL_NAME=Qwen/Qwen2.5-72B-Instruct
+python inference.py
+```
+
+The script reads `HF_TOKEN` via `os.getenv("HF_TOKEN")` at runtime.
+The token is never written to disk or committed to the repository.
+
+For automated evaluation, set these variables in the execution
+environment before invoking the script. The script will also accept
+`OPENAI_API_KEY` as a fallback if `HF_TOKEN` is not set.
+
+The Hugging Face Space serving the environment API requires no
+authentication — all endpoints (`/reset`, `/step`, `/state`,
+`/grader`, `/health`) are publicly accessible.
+
 ### Required Stdout Format
 
 The script emits exactly these record types:
