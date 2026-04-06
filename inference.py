@@ -15,11 +15,14 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import requests
 from openai import OpenAI
 
+TaskId = Literal["easy", "medium", "hard", "expert"]
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 HF_TOKEN = os.getenv("HF_TOKEN")
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
@@ -31,7 +34,7 @@ ENV_BASE_URL = os.getenv("OPENENV_BASE_URL", "http://127.0.0.1:7860")
 BENCHMARK_NAME = "site-reliability-server"
 DEFAULT_SEED = 42
 GLOBAL_TIMEOUT_SECONDS = 19 * 60
-TASKS = ("easy", "medium", "hard", "expert")
+TASKS: tuple[TaskId, ...] = ("easy", "medium", "hard", "expert")
 CANONICAL_SCENARIOS = {
     "easy": "easy-001",
     "medium": "medium-001",
@@ -53,13 +56,15 @@ SERVICE_ORDER = (
     "cache-service",
 )
 
-client = OpenAI(api_key=HF_TOKEN, base_url=API_BASE_URL) if HF_TOKEN else None
+MODEL_API_KEY = OPENAI_API_KEY or HF_TOKEN
+
+client = OpenAI(api_key=MODEL_API_KEY, base_url=API_BASE_URL) if MODEL_API_KEY else None
 _SERVER_PROCESS: subprocess.Popen[str] | None = None
 
 
 @dataclass
 class EpisodeResult:
-    task_id: str
+    task_id: Literal["easy", "medium", "hard", "expert"]
     scenario_id: str
     score: float
     success: bool
@@ -492,7 +497,7 @@ def action_payload(
     }
 
 
-def run_task(task_id: str) -> EpisodeResult:
+def run_task(task_id: TaskId) -> EpisodeResult:
     scenario_id = CANONICAL_SCENARIOS[task_id]
     obs: dict[str, Any] | None = None
     model_diagnosis: str | None = None
@@ -594,10 +599,25 @@ def write_scores(results: dict[str, EpisodeResult], started_at: float) -> None:
         json.dump(payload, handle, indent=2, sort_keys=True)
 
 
+def require_runtime_configuration() -> tuple[bool, str | None]:
+    if not MODEL_API_KEY:
+        return False, (
+            "Missing required API credential. "
+            "Set OPENAI_API_KEY (preferred) or HF_TOKEN, plus API_BASE_URL and MODEL_NAME, before running inference.py."
+        )
+    return True, None
+
+
 def main() -> int:
     started_at = time.time()
     results: dict[str, EpisodeResult] = {}
     signal.alarm(GLOBAL_TIMEOUT_SECONDS)
+
+    config_ok, config_error = require_runtime_configuration()
+    if not config_ok:
+        print(config_error, file=sys.stderr, flush=True)
+        write_scores(results, started_at)
+        return 2
 
     try:
         ensure_server()

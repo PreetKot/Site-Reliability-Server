@@ -248,8 +248,7 @@ The submission baseline lives in root-level `inference.py`.
 
 Properties:
 
-- uses `HF_TOKEN`, `API_BASE_URL`, and `MODEL_NAME`
-- does not rely on `OPENAI_API_KEY`
+- uses `OPENAI_API_KEY` (preferred) or `HF_TOKEN`, plus `API_BASE_URL` and `MODEL_NAME`
 - starts the local env automatically if it is not already running
 - emits only the required stdout record types
 - writes machine-readable results to `baseline_scores.json`
@@ -259,9 +258,14 @@ Properties:
 
 ### Required Environment Variables
 ```bash
-export HF_TOKEN=<your_hf_router_token>
+export OPENAI_API_KEY=<your_openai_compatible_api_key>
 export API_BASE_URL=https://router.huggingface.co/v1
 export MODEL_NAME=Qwen/Qwen2.5-72B-Instruct
+```
+
+Alternative credential variable (supported for evaluator compatibility):
+```bash
+export HF_TOKEN=<your_hf_router_token>
 ```
 
 Optional:
@@ -274,22 +278,22 @@ export OPENENV_BASE_URL=http://127.0.0.1:7860
 
 The environment server itself requires no API keys — it is a pure
 simulation with no external dependencies. Keys are only needed by
-`inference.py` to make LLM calls to the Hugging Face router.
+`inference.py` to make LLM calls using the OpenAI client.
 
 Before running `inference.py`, export your token in the shell:
 ```bash
-export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxx
+export OPENAI_API_KEY=sk_xxxxxxxxxxxxxxxxxx
 export API_BASE_URL=https://router.huggingface.co/v1
 export MODEL_NAME=Qwen/Qwen2.5-72B-Instruct
 python inference.py
 ```
 
-The script reads `HF_TOKEN` via `os.getenv("HF_TOKEN")` at runtime.
+The script reads `OPENAI_API_KEY` via `os.getenv("OPENAI_API_KEY")` at runtime,
+and falls back to `HF_TOKEN` when `OPENAI_API_KEY` is not set.
 The token is never written to disk or committed to the repository.
 
 For automated evaluation, set these variables in the execution
-environment before invoking the script. The script will also accept
-`OPENAI_API_KEY` as a fallback if `HF_TOKEN` is not set.
+environment before invoking the script.
 
 The Hugging Face Space serving the environment API requires no
 authentication — all endpoints (`/reset`, `/step`, `/state`,
@@ -388,6 +392,17 @@ pytest -q
 ```bash
 openenv validate
 ```
+
+### 7. Run Full Local Pre-Submit Validation
+```bash
+export OPENAI_API_KEY=<your_openai_compatible_api_key>
+export API_BASE_URL=https://router.huggingface.co/v1
+export MODEL_NAME=Qwen/Qwen2.5-72B-Instruct
+./scripts/validate-local.sh
+```
+
+This command runs `pytest`, `openenv validate`, `docker build`, container
+health/reset checks, and `inference.py` in one flow.
 
 ## Docker
 ```bash

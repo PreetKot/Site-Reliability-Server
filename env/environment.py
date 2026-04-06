@@ -2,6 +2,7 @@ import json
 import os
 import random
 from pathlib import Path
+from typing import Literal
 
 from .graders import GRADERS
 from .models import Action, DeployEvent, EpisodeState, IncidentContext, Observation, Reward, RewardBreakdown
@@ -10,6 +11,7 @@ from .simulator import SERVICE_GRAPH, VirtualDataCentre
 SCENARIOS_DIR = Path(__file__).parent.parent / "scenarios"
 
 _MAX_STEPS = {"easy": 15, "medium": 15, "hard": 20, "expert": 25}
+TaskId = Literal["easy", "medium", "hard", "expert"]
 
 
 class SREEnvironment:
@@ -37,7 +39,7 @@ class SREEnvironment:
 
     def reset(
         self,
-        task_id: str,
+        task_id: TaskId,
         scenario_id: str | None = None,
         *,
         seed: int | None = None,
@@ -227,7 +229,7 @@ class SREEnvironment:
         grader = GRADERS[self._state.task_id]
         return grader(self._state)
 
-    def _build_observation(self, task_id: str, step: int, scenario_id: str) -> Observation:
+    def _build_observation(self, task_id: TaskId, step: int, scenario_id: str) -> Observation:
         _ = scenario_id
         if self._vdc is None:
             raise RuntimeError("Environment simulator is not initialized")
