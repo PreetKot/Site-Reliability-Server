@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM public.ecr.aws/docker/library/python:3.11-slim
 
 # Designed for 2 vCPU / 8GB RAM
 # All simulation is in-memory Python no external services required
