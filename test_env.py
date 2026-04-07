@@ -93,7 +93,7 @@ def test_grade_returns_valid_score(env, task_id):
         if done:
             break
     score, breakdown = env.grade()
-    assert 0.0 <= score <= 1.0
+    assert 0.0 < score < 1.0
     assert isinstance(breakdown, dict)
 
 

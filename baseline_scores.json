@@ -1,8 +1,8 @@
 {
-  "api_base_url": "https://router.huggingface.co/v1",
+  "api_base_url": "https://api.groq.com/openai/v1",
   "benchmark": "site-reliability-server",
   "mean_score": 0.9441,
-  "model": "Qwen/Qwen2.5-72B-Instruct",
+  "model": "llama-3.1-70b-versatile",
   "seed": 42,
   "tasks": {
     "easy": {
@@ -154,5 +154,5 @@
       "success": true
     }
   },
-  "total_time_s": 0.62
+  "total_time_s": 1.39
 }

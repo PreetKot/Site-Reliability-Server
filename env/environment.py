@@ -227,7 +227,10 @@ class SREEnvironment:
         if self._state is None:
             raise RuntimeError("Call reset() and run an episode first")
         grader = GRADERS[self._state.task_id]
-        return grader(self._state)
+        raw_score, breakdown = grader(self._state)
+        # Deep validator requires strict bounds: 0.0 < score < 1.0.
+        clamped_score = max(0.0001, min(0.9999, float(raw_score)))
+        return round(clamped_score, 4), breakdown
 
     def _build_observation(self, task_id: TaskId, step: int, scenario_id: str) -> Observation:
         _ = scenario_id
