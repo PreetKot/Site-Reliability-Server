@@ -1,7 +1,8 @@
 torch
 transformers>=4.40.0
-# trl>=0.12 introduced Dr. GRPO (old_logps/ref_logps); train_grpo.py handles
-# this gracefully via a runtime inspection guard, so any recent trl works.
+# GRPOConfig / GRPOTrainer were added in trl 0.9.0.
+# train_grpo.py handles both trl<0.12 (tokenizer=) and trl>=0.12
+# (processing_class=, use_dr_grpo) via runtime inspection guards.
 trl>=0.9.0
 peft>=0.10.0
 accelerate>=0.27.0
