@@ -7,6 +7,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+import matplotlib.pyplot as plt
+import numpy as np
 import requests
 import torch
 import wandb
@@ -428,29 +430,197 @@ def make_env_reward_function(
     return env_reward_func
 
 
+def build_prompt_dataset(
+    session: requests.Session,
+    env_url: str,
+    timeout: float,
+    n_prompts: int = 20,
+) -> Dataset:
+    """
+    Build a diverse prompt dataset by resetting the environment across all task types.
+    This replaces the broken bootstrap dataset that poisoned the first GRPO update.
+    """
+    tasks = ["easy", "medium", "hard", "expert", "enterprise"]
+    prompts: list[str] = []
+    print(f"Building prompt dataset ({n_prompts} prompts across {tasks})...")
+    for i in range(n_prompts):
+        task = tasks[i % len(tasks)]
+        try:
+            resp = session.post(
+                f"{env_url.rstrip('/')}/reset",
+                json={"task_id": task},
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            obs = resp.json()
+            prompts.append(build_prompt(obs))
+        except Exception as exc:
+            print(f"  Warning: reset failed for task={task}: {exc}")
+            prompts.append(
+                "You are an on-call SRE agent. "
+                "Return ONE JSON object only. "
+                'Example: {"action_type": "CHECK_LOGS", "target_service": "api-gateway"}'
+            )
+    print(f"Dataset ready: {len(prompts)} prompts")
+    return Dataset.from_dict({"prompt": prompts})
+
+
+def save_training_curves(log_history: list[dict], output_path: str = ".") -> None:
+    """
+    Extract reward and loss from TRL trainer.state.log_history and save PNG curves.
+    Uses the trainer's own log history so curves reflect actual GRPO updates.
+    """
+    reward_steps: list[int] = []
+    reward_vals: list[float] = []
+    loss_steps: list[int] = []
+    loss_vals: list[float] = []
+
+    for entry in log_history:
+        step = entry.get("step")
+        if step is None:
+            continue
+        # TRL GRPO logs "reward" (mean across all reward functions) and "loss"
+        if "reward" in entry and entry["reward"] is not None:
+            reward_steps.append(step)
+            reward_vals.append(float(entry["reward"]))
+        if "loss" in entry and entry["loss"] is not None:
+            loss_steps.append(step)
+            loss_vals.append(float(entry["loss"]))
+
+    # --- Reward curve ---
+    fig_r, ax_r = plt.subplots(figsize=(9, 5))
+    if reward_vals:
+        ax_r.plot(reward_steps, reward_vals, color="green", linewidth=1.5, label="step_reward")
+        # Smoothed trend line
+        if len(reward_vals) >= 3:
+            z = np.polyfit(reward_steps, reward_vals, 1)
+            p = np.poly1d(z)
+            ax_r.plot(
+                reward_steps, p(reward_steps),
+                "r--", linewidth=1.2,
+                label=f"trend (slope={z[0]:+.5f})",
+            )
+        ax_r.axhline(0, color="gray", linewidth=0.8, linestyle=":")
+        ax_r.set_xlabel("Step")
+        ax_r.set_ylabel("Mean Reward")
+        ax_r.set_title("Reward Curve")
+        ax_r.legend()
+        ax_r.grid(True, alpha=0.3)
+        start_r = reward_vals[0] if reward_vals else 0
+        end_r = reward_vals[-1] if reward_vals else 0
+        ax_r.set_title(
+            f"Reward Curve  (start={start_r:+.3f} → end={end_r:+.3f})"
+        )
+    else:
+        ax_r.text(0.5, 0.5, "No reward data recorded", ha="center", va="center")
+    fig_r.tight_layout()
+    reward_out = os.path.join(output_path, "reward_curve.png")
+    fig_r.savefig(reward_out, dpi=150, bbox_inches="tight")
+    plt.close(fig_r)
+    print(f"Saved {reward_out}")
+
+    # --- Loss curve ---
+    fig_l, ax_l = plt.subplots(figsize=(9, 5))
+    if loss_vals:
+        ax_l.plot(loss_steps, loss_vals, color="steelblue", linewidth=1.5, label="grpo_loss")
+        ax_l.axhline(0, color="gray", linewidth=0.8, linestyle=":")
+        ax_l.set_xlabel("Step")
+        ax_l.set_ylabel("GRPO Loss")
+        start_l = loss_vals[0] if loss_vals else 0
+        end_l = loss_vals[-1] if loss_vals else 0
+        ax_l.set_title(
+            f"Loss Curve  (start={start_l:+.3f} → end={end_l:+.3f})"
+        )
+        ax_l.legend()
+        ax_l.grid(True, alpha=0.3)
+    else:
+        ax_l.text(0.5, 0.5, "No loss data recorded", ha="center", va="center")
+    fig_l.tight_layout()
+    loss_out = os.path.join(output_path, "loss_curve.png")
+    fig_l.savefig(loss_out, dpi=150, bbox_inches="tight")
+    plt.close(fig_l)
+    print(f"Saved {loss_out}")
+
+
+def evaluate_agent(
+    session: requests.Session,
+    model,
+    tokenizer,
+    env_url: str,
+    timeout: float,
+    max_steps: int,
+    max_new_tokens: int,
+    temperature: float,
+    top_p: float,
+    label: str = "eval",
+) -> float:
+    """Run one full episode and return mean step reward — used for before/after comparison."""
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    try:
+        observation = session.post(
+            f"{env_url.rstrip('/')}/reset",
+            json={"task_id": "easy"},
+            timeout=timeout,
+        ).json()
+    except Exception:
+        return 0.0
+
+    rewards: list[float] = []
+    generation_kwargs = {
+        "max_new_tokens": max_new_tokens,
+        "do_sample": True,
+        "temperature": temperature,
+        "top_p": top_p,
+        "pad_token_id": tokenizer.eos_token_id,
+        "eos_token_id": tokenizer.eos_token_id,
+    }
+
+    for _ in range(max_steps):
+        prompt = build_prompt(observation)
+        query = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024).input_ids.to(device)
+        try:
+            out = model.generate(query, **generation_kwargs)
+            text = tokenizer.decode(out[0][query.shape[1]:], skip_special_tokens=True)
+        except Exception:
+            text = json.dumps(fallback_action())
+        action = parse_action_output(text)
+        try:
+            result = step_env(session, env_url, action, timeout)
+            rewards.append(result.reward)
+            observation = result.observation
+            if result.done:
+                break
+        except Exception:
+            break
+
+    mean = sum(rewards) / max(len(rewards), 1)
+    print(f"[{label}] steps={len(rewards)} mean_reward={mean:+.4f}")
+    return mean
+
+
 def train(args: argparse.Namespace) -> None:
     set_seed(args.seed)
 
-    # Avoid interactive wandb login prompts during local dry-runs.
-    os.environ.setdefault("WANDB_MODE", "offline")
-
-    wandb.init(
-        project=os.getenv("WANDB_PROJECT", "openenv-enterprise-grpo"),
-        name=os.getenv("WANDB_RUN_NAME", f"grpo-enterprise-{args.seed}"),
-        config={
-            "model_name": args.model_name,
-            "env_url": args.env_url,
-            "epochs": args.epochs,
-            "max_steps": args.max_steps,
-            "seed": args.seed,
-            "quantization": "4bit",
-            "adapter": "lora",
-            "algorithm": "grpo",
-        },
-    )
+    # Disable W&B to avoid interactive prompts; curves are saved locally as PNGs.
+    os.environ["WANDB_MODE"] = "disabled"
 
     session = build_http_session()
     model, tokenizer = init_unsloth_model(args)
+
+    # Build a real, diverse prompt dataset — not a bootstrap placeholder.
+    train_dataset = build_prompt_dataset(
+        session, args.env_url, args.request_timeout, n_prompts=args.dataset_size
+    )
+
+    # Capture pre-training baseline score for the before/after comparison.
+    print("\n=== Pre-training evaluation ===")
+    pre_score = evaluate_agent(
+        session, model, tokenizer,
+        args.env_url, args.request_timeout,
+        args.max_steps, args.max_new_tokens,
+        args.temperature, args.top_p,
+        label="before_training",
+    )
 
     env_reward_fn = make_env_reward_function(
         session=session,
@@ -461,19 +631,19 @@ def train(args: argparse.Namespace) -> None:
     action_reward_fn = make_action_validity_reward_function()
     protocol_reward_fn = make_protocol_adherence_reward_function()
 
-    # Keep a minimal bootstrap dataset; we overwrite this each epoch.
-    train_dataset = Dataset.from_dict({"prompt": ["Bootstrap prompt for GRPO trainer."]})
-
     grpo_config = GRPOConfig(
         output_dir=args.output_dir,
         learning_rate=args.learning_rate,
         per_device_train_batch_size=1,
-        gradient_accumulation_steps=1,
+        # Accumulate over 4 steps so each effective update sees 4 * num_generations rollouts.
+        gradient_accumulation_steps=4,
+        # Minimum 4 generations for meaningful advantage variance; 8 is better.
         num_generations=args.num_generations,
         max_completion_length=args.max_new_tokens,
-        num_train_epochs=1,
+        num_train_epochs=args.epochs,
         report_to="none",
         logging_steps=1,
+        save_steps=999999,  # skip intermediate checkpoints to save Colab disk
     )
 
     grpo_trainer = GRPOTrainer(
@@ -491,125 +661,61 @@ def train(args: argparse.Namespace) -> None:
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    generation_kwargs = {
-        "max_new_tokens": args.max_new_tokens,
-        "do_sample": True,
-        "temperature": args.temperature,
-        "top_p": args.top_p,
-        "pad_token_id": tokenizer.eos_token_id,
-        "eos_token_id": tokenizer.eos_token_id,
-    }
+    print("\n=== GRPO Training ===")
+    grpo_trainer.train()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    global_step = 0
-
-    for epoch in tqdm(range(args.epochs), desc="GRPO Epochs"):
-        try:
-            observation = reset_env(session, args.env_url, timeout=args.request_timeout)
-        except Exception as exc:
-            wandb.log({"epoch": epoch, "reset_error": str(exc)})
-            time.sleep(1.0)
-            continue
-
-        episode_rewards: list[float] = []
-        epoch_prompts: list[str] = []
-        done = False
-
-        for step_idx in range(args.max_steps):
-            prompt = build_prompt(observation)
-            epoch_prompts.append(prompt)
-            query_tensor = tokenizer(
-                prompt,
-                return_tensors="pt",
-                truncation=True,
-                max_length=args.max_prompt_length,
-            ).input_ids.to(device)
-
-            try:
-                response_tensor = model.generate(query_tensor, **generation_kwargs)
-                completion_tensor = response_tensor[0][query_tensor.shape[1] :]
-                response_text = tokenizer.decode(completion_tensor, skip_special_tokens=True)
-            except Exception as exc:
-                wandb.log({"epoch": epoch, "step": step_idx, "generation_error": str(exc)})
-                response_text = json.dumps(fallback_action())
-
-            action_payload = parse_action_output(response_text)
-
-            try:
-                step_result = step_env(
-                    session,
-                    args.env_url,
-                    action_payload,
-                    timeout=args.request_timeout,
-                )
-            except Exception as exc:
-                wandb.log({"epoch": epoch, "step": step_idx, "step_error": str(exc)})
-                step_result = EnvStepResult(
-                    observation=observation,
-                    reward=-1.0,
-                    done=True,
-                    info={"error": str(exc)},
-                )
-
-            episode_rewards.append(step_result.reward)
-            global_step += 1
-            mean_reward = sum(episode_rewards) / len(episode_rewards)
-
-            wandb.log(
-                {
-                    "epoch": epoch,
-                    "global_step": global_step,
-                    "step_index": step_idx,
-                    "step_reward": step_result.reward,
-                    "mean_reward": mean_reward,
-                    "episode_length": step_idx + 1,
-                }
-            )
-
-            observation = step_result.observation
-            done = step_result.done
-            if done:
-                break
-
-        # One GRPO optimization pass per epoch using prompts observed from the live environment.
-        if epoch_prompts:
-            grpo_trainer.train_dataset = Dataset.from_dict({"prompt": epoch_prompts})
-            try:
-                grpo_trainer.train()
-            except Exception as exc:
-                wandb.log({"epoch": epoch, "grpo_error": str(exc)})
-
-        final_mean_reward = sum(episode_rewards) / max(1, len(episode_rewards))
-        wandb.log(
-            {
-                "epoch": epoch,
-                "mean_reward": final_mean_reward,
-                "episode_length": len(episode_rewards),
-                "episode_done": done,
-            }
-        )
-
+    # Save model adapter weights.
     grpo_trainer.model.save_pretrained(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
-    wandb.finish()
+
+    # Generate curves from the trainer's own log history (reflects actual GRPO updates).
+    print("\n=== Saving training curves ===")
+    save_training_curves(grpo_trainer.state.log_history, output_path=".")
+
+    # Capture post-training score for before/after evidence.
+    print("\n=== Post-training evaluation ===")
+    post_score = evaluate_agent(
+        session, model, tokenizer,
+        args.env_url, args.request_timeout,
+        args.max_steps, args.max_new_tokens,
+        args.temperature, args.top_p,
+        label="after_training",
+    )
+
+    delta = post_score - pre_score
+    print(f"\n=== Training Summary ===")
+    print(f"  Pre-training  mean reward : {pre_score:+.4f}")
+    print(f"  Post-training mean reward : {post_score:+.4f}")
+    print(f"  Improvement               : {delta:+.4f}")
+    print(f"  Model saved to            : {args.output_dir}")
+    print(f"  Curves saved to           : reward_curve.png, loss_curve.png")
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="GRPO training for enterprise OpenEnv workflow")
-    parser.add_argument("--model_name", type=str, default="meta-llama/Meta-Llama-3-8B-Instruct")
+    parser = argparse.ArgumentParser(description="GRPO training for SRE OpenEnv — fixed pure-GRPO loop")
+    parser.add_argument("--model_name", type=str, default="unsloth/Qwen2.5-1.5B-Instruct",
+                        help="Colab default: unsloth/Qwen2.5-1.5B-Instruct. For A100: meta-llama/Meta-Llama-3-8B-Instruct")
     parser.add_argument("--env_url", type=str, default="http://localhost:7860")
-    parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--max_steps", type=int, default=25)
-    parser.add_argument("--output_dir", type=str, default="./artifacts/grpo-enterprise-llama3")
+    # epochs = number of full passes over the prompt dataset through GRPOTrainer
+    parser.add_argument("--epochs", type=int, default=3,
+                        help="Full training epochs. 3 is enough to show a reward trend on Colab T4.")
+    parser.add_argument("--max_steps", type=int, default=15,
+                        help="Max env steps per evaluation episode (not used in training loop)")
+    parser.add_argument("--dataset_size", type=int, default=20,
+                        help="Number of prompts to build from live env resets. More = better coverage.")
+    parser.add_argument("--output_dir", type=str, default="./artifacts/grpo-sre")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--learning_rate", type=float, default=5e-6)
     parser.add_argument("--request_timeout", type=float, default=20.0)
     parser.add_argument("--max_new_tokens", type=int, default=128)
-    parser.add_argument("--max_prompt_length", type=int, default=2048)
+    parser.add_argument("--max_prompt_length", type=int, default=1024,
+                        help="Truncate prompts to this length to fit Colab T4 VRAM")
     parser.add_argument("--max_seq_length", type=int, default=2048)
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--top_p", type=float, default=0.9)
-    parser.add_argument("--num_generations", type=int, default=2)
+    # 4 is the minimum for meaningful GRPO advantage variance; 8 is better on larger GPUs
+    parser.add_argument("--num_generations", type=int, default=4,
+                        help="Completions per prompt for advantage estimation. Min 4.")
     parser.add_argument("--lora_r", type=int, default=16)
     parser.add_argument("--lora_alpha", type=int, default=32)
     parser.add_argument("--lora_dropout", type=float, default=0.05)
