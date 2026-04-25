@@ -1,6 +1,8 @@
 torch
 transformers
-trl
+# trl>=0.12 introduces "Dr. GRPO" which changes grpo_accumulated_loss signature;
+# pin to 0.11.x to stay on the standard GRPO API that Unsloth expects.
+trl==0.11.4
 peft
 accelerate
 requests

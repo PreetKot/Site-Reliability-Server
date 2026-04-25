@@ -631,6 +631,12 @@ def train(args: argparse.Namespace) -> None:
     action_reward_fn = make_action_validity_reward_function()
     protocol_reward_fn = make_protocol_adherence_reward_function()
 
+    # Build GRPOConfig kwargs; conditionally disable Dr. GRPO (trl>=0.12) to stay
+    # on the standard GRPO loss API that Unsloth's compiled cache expects.
+    import inspect as _inspect
+    _grpo_fields = set(_inspect.signature(GRPOConfig.__init__).parameters)
+    _extra = {"use_dr_grpo": False} if "use_dr_grpo" in _grpo_fields else {}
+
     grpo_config = GRPOConfig(
         output_dir=args.output_dir,
         learning_rate=args.learning_rate,
@@ -644,6 +650,7 @@ def train(args: argparse.Namespace) -> None:
         report_to="none",
         logging_steps=1,
         save_steps=999999,  # skip intermediate checkpoints to save Colab disk
+        **_extra,
     )
 
     grpo_trainer = GRPOTrainer(
