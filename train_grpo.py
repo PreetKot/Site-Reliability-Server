@@ -4,7 +4,6 @@ import json
 import os
 import random
 import re
-import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,12 +11,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import requests
 import torch
-import wandb
-from accelerate import Accelerator
 from datasets import Dataset
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from requests.adapters import HTTPAdapter
-from tqdm import tqdm
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -102,10 +98,15 @@ def build_http_session(total_retries: int = 5, backoff_factor: float = 0.5) -> r
     return session
 
 
-def reset_env(session: requests.Session, env_url: str, timeout: float) -> dict[str, Any]:
+def reset_env(
+    session: requests.Session,
+    env_url: str,
+    timeout: float,
+    task_id: str = "easy",
+) -> dict[str, Any]:
     response = session.post(
         f"{env_url.rstrip('/')}/reset",
-        json={"task_id": "enterprise"},
+        json={"task_id": task_id},
         timeout=timeout,
     )
     response.raise_for_status()
@@ -341,9 +342,9 @@ def build_prompt(observation: dict[str, Any]) -> str:
         "Required keys: action_type, target_service. "
         "Allowed action_type values: CHECK_LOGS, INSPECT_SERVICE, DRAIN_TRAFFIC, RESTART_SERVICE, "
         "SCALE_UP, SCALE_DOWN, ROLLBACK, UPDATE_CONFIG, SILENCE_ALERT, "
-        "ACKNOWLEDGE_PAGERDUTY, SEND_SLACK_MESSAGE, RESOLVE_PAGERDUTY.\\n"
-        "Observation:\\n"
-        f"{compact_obs}\\n"
+        "ACKNOWLEDGE_PAGERDUTY, SEND_SLACK_MESSAGE, RESOLVE_PAGERDUTY.\n"
+        "Observation:\n"
+        f"{compact_obs}\n"
         "Action JSON:"
     )
 
@@ -425,31 +426,27 @@ def make_env_reward_function(
     env_url: str,
     timeout: float,
 ):
-    def env_reward_func(prompts: list[str], completions: list[Any], **_: Any) -> list[float]:
-        _ = prompts
-        rewards: list[float] = []
-        episode_active = False
-        episode_done = False
+    # Cycle through tasks so completions see diverse difficulty levels.
+    _tasks = ["easy", "medium", "hard", "expert", "enterprise"]
+    _task_idx = [0]
 
+    def env_reward_func(prompts: list[str], completions: list[Any], **_: Any) -> list[float]:
+        rewards: list[float] = []
         for completion in completions:
+            # Each completion gets its OWN independent episode reset.
+            # GRPO requires independent reward signals — sharing an episode
+            # across completions correlates rewards with action order, which
+            # biases advantage estimation.
+            task = _tasks[_task_idx[0] % len(_tasks)]
+            _task_idx[0] += 1
             completion_text = _completion_to_text(completion)
             action_payload = parse_action_output(completion_text)
-
-            if episode_done:
-                rewards.append(-0.05)
-                continue
-
             try:
-                if not episode_active:
-                    reset_env(session, env_url, timeout)
-                    episode_active = True
+                reset_env(session, env_url, timeout, task_id=task)
                 step_result = step_env(session, env_url, action_payload, timeout)
                 rewards.append(step_result.reward)
-                if step_result.done:
-                    episode_done = True
             except Exception:
                 rewards.append(-1.0)
-                episode_done = True
         return rewards
 
     return env_reward_func
@@ -657,6 +654,7 @@ def train(args: argparse.Namespace) -> None:
         per_device_train_batch_size=1,
         gradient_accumulation_steps=4,
         num_generations=args.num_generations,
+        max_prompt_length=args.max_prompt_length,
         max_completion_length=args.max_new_tokens,
         num_train_epochs=args.epochs,
         report_to="none",
@@ -733,9 +731,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--learning_rate", type=float, default=5e-6)
     parser.add_argument("--request_timeout", type=float, default=20.0)
     parser.add_argument("--max_new_tokens", type=int, default=128)
-    parser.add_argument("--max_prompt_length", type=int, default=1024,
-                        help="Truncate prompts to this length to fit Colab T4 VRAM.")
-    parser.add_argument("--max_seq_length", type=int, default=2048)
+    parser.add_argument("--max_prompt_length", type=int, default=512,
+                        help="Hard-truncate prompts to this token length (T4 VRAM guard).")
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--top_p", type=float, default=0.9)
     parser.add_argument("--num_generations", type=int, default=4,
