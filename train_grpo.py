@@ -1,4 +1,5 @@
 import argparse
+import inspect
 import json
 import os
 import random
@@ -12,14 +13,18 @@ import numpy as np
 import requests
 import torch
 import wandb
+from accelerate import Accelerator
 from datasets import Dataset
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from requests.adapters import HTTPAdapter
 from tqdm import tqdm
-from urllib3.util.retry import Retry
-
-from unsloth import FastLanguageModel
-
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+)
 from trl import GRPOConfig, GRPOTrainer
+from urllib3.util.retry import Retry
 
 ACTION_TYPES = {
     "CHECK_LOGS",
@@ -169,7 +174,6 @@ def extract_json_object(text: str) -> str | None:
 
 
 def fallback_action() -> dict[str, Any]:
-    # Keep target_service to satisfy strict FastAPI schema and avoid 422 failures.
     return {"action_type": "CHECK_LOGS", "target_service": "user-service"}
 
 
@@ -344,17 +348,42 @@ def build_prompt(observation: dict[str, Any]) -> str:
     )
 
 
-def init_unsloth_model(args: argparse.Namespace):
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=args.model_name,
-        max_seq_length=args.max_seq_length,
-        dtype=None,
+def init_model(args: argparse.Namespace):
+    """Load a 4-bit quantised base model and wrap it with LoRA adapters.
+
+    Uses standard HuggingFace transformers + PEFT — no Unsloth dependency,
+    so there are no Unsloth/TRL version-mismatch issues.
+    """
+    bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.float16,
+        bnb_4bit_use_double_quant=True,
     )
 
-    model = FastLanguageModel.get_peft_model(
-        model,
+    print(f"Loading base model: {args.model_name}")
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model_name,
+        quantization_config=bnb_config,
+        device_map="auto",
+        trust_remote_code=True,
+    )
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.model_name,
+        trust_remote_code=True,
+    )
+
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "left"
+
+    # Prepare for gradient checkpointing with k-bit training
+    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+
+    lora_config = LoraConfig(
         r=args.lora_r,
+        lora_alpha=args.lora_alpha,
         target_modules=[
             "q_proj",
             "k_proj",
@@ -364,16 +393,13 @@ def init_unsloth_model(args: argparse.Namespace):
             "up_proj",
             "down_proj",
         ],
-        lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
         bias="none",
-        use_gradient_checkpointing="unsloth",
-        random_state=args.seed,
+        task_type="CAUSAL_LM",
     )
 
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "left"
+    model = get_peft_model(model, lora_config)
+    model.print_trainable_parameters()
 
     return model, tokenizer
 
@@ -382,7 +408,6 @@ def _completion_to_text(item: Any) -> str:
     if isinstance(item, str):
         return item
     if isinstance(item, list):
-        # Chat format from TRL can be [{"role":"assistant","content":"..."}] per sample.
         chunks: list[str] = []
         for part in item:
             if isinstance(part, dict):
@@ -436,10 +461,6 @@ def build_prompt_dataset(
     timeout: float,
     n_prompts: int = 20,
 ) -> Dataset:
-    """
-    Build a diverse prompt dataset by resetting the environment across all task types.
-    This replaces the broken bootstrap dataset that poisoned the first GRPO update.
-    """
     tasks = ["easy", "medium", "hard", "expert", "enterprise"]
     prompts: list[str] = []
     print(f"Building prompt dataset ({n_prompts} prompts across {tasks})...")
@@ -466,10 +487,6 @@ def build_prompt_dataset(
 
 
 def save_training_curves(log_history: list[dict], output_path: str = ".") -> None:
-    """
-    Extract reward and loss from TRL trainer.state.log_history and save PNG curves.
-    Uses the trainer's own log history so curves reflect actual GRPO updates.
-    """
     reward_steps: list[int] = []
     reward_vals: list[float] = []
     loss_steps: list[int] = []
@@ -479,7 +496,6 @@ def save_training_curves(log_history: list[dict], output_path: str = ".") -> Non
         step = entry.get("step")
         if step is None:
             continue
-        # TRL GRPO logs "reward" (mean across all reward functions) and "loss"
         if "reward" in entry and entry["reward"] is not None:
             reward_steps.append(step)
             reward_vals.append(float(entry["reward"]))
@@ -487,11 +503,9 @@ def save_training_curves(log_history: list[dict], output_path: str = ".") -> Non
             loss_steps.append(step)
             loss_vals.append(float(entry["loss"]))
 
-    # --- Reward curve ---
     fig_r, ax_r = plt.subplots(figsize=(9, 5))
     if reward_vals:
         ax_r.plot(reward_steps, reward_vals, color="green", linewidth=1.5, label="step_reward")
-        # Smoothed trend line
         if len(reward_vals) >= 3:
             z = np.polyfit(reward_steps, reward_vals, 1)
             p = np.poly1d(z)
@@ -503,14 +517,11 @@ def save_training_curves(log_history: list[dict], output_path: str = ".") -> Non
         ax_r.axhline(0, color="gray", linewidth=0.8, linestyle=":")
         ax_r.set_xlabel("Step")
         ax_r.set_ylabel("Mean Reward")
-        ax_r.set_title("Reward Curve")
-        ax_r.legend()
-        ax_r.grid(True, alpha=0.3)
         start_r = reward_vals[0] if reward_vals else 0
         end_r = reward_vals[-1] if reward_vals else 0
-        ax_r.set_title(
-            f"Reward Curve  (start={start_r:+.3f} → end={end_r:+.3f})"
-        )
+        ax_r.set_title(f"Reward Curve  (start={start_r:+.3f} → end={end_r:+.3f})")
+        ax_r.legend()
+        ax_r.grid(True, alpha=0.3)
     else:
         ax_r.text(0.5, 0.5, "No reward data recorded", ha="center", va="center")
     fig_r.tight_layout()
@@ -519,7 +530,6 @@ def save_training_curves(log_history: list[dict], output_path: str = ".") -> Non
     plt.close(fig_r)
     print(f"Saved {reward_out}")
 
-    # --- Loss curve ---
     fig_l, ax_l = plt.subplots(figsize=(9, 5))
     if loss_vals:
         ax_l.plot(loss_steps, loss_vals, color="steelblue", linewidth=1.5, label="grpo_loss")
@@ -528,9 +538,7 @@ def save_training_curves(log_history: list[dict], output_path: str = ".") -> Non
         ax_l.set_ylabel("GRPO Loss")
         start_l = loss_vals[0] if loss_vals else 0
         end_l = loss_vals[-1] if loss_vals else 0
-        ax_l.set_title(
-            f"Loss Curve  (start={start_l:+.3f} → end={end_l:+.3f})"
-        )
+        ax_l.set_title(f"Loss Curve  (start={start_l:+.3f} → end={end_l:+.3f})")
         ax_l.legend()
         ax_l.grid(True, alpha=0.3)
     else:
@@ -555,7 +563,9 @@ def evaluate_agent(
     label: str = "eval",
 ) -> float:
     """Run one full episode and return mean step reward — used for before/after comparison."""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = next(model.parameters()).device
+    model.eval()
+
     try:
         observation = session.post(
             f"{env_url.rstrip('/')}/reset",
@@ -577,10 +587,15 @@ def evaluate_agent(
 
     for _ in range(max_steps):
         prompt = build_prompt(observation)
-        query = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024).input_ids.to(device)
+        inputs = tokenizer(
+            prompt, return_tensors="pt", truncation=True, max_length=1024
+        ).to(device)
         try:
-            out = model.generate(query, **generation_kwargs)
-            text = tokenizer.decode(out[0][query.shape[1]:], skip_special_tokens=True)
+            with torch.no_grad():
+                out = model.generate(**inputs, **generation_kwargs)
+            text = tokenizer.decode(
+                out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True
+            )
         except Exception:
             text = json.dumps(fallback_action())
         action = parse_action_output(text)
@@ -593,6 +608,7 @@ def evaluate_agent(
         except Exception:
             break
 
+    model.train()
     mean = sum(rewards) / max(len(rewards), 1)
     print(f"[{label}] steps={len(rewards)} mean_reward={mean:+.4f}")
     return mean
@@ -601,18 +617,15 @@ def evaluate_agent(
 def train(args: argparse.Namespace) -> None:
     set_seed(args.seed)
 
-    # Disable W&B to avoid interactive prompts; curves are saved locally as PNGs.
     os.environ["WANDB_MODE"] = "disabled"
 
     session = build_http_session()
-    model, tokenizer = init_unsloth_model(args)
+    model, tokenizer = init_model(args)
 
-    # Build a real, diverse prompt dataset — not a bootstrap placeholder.
     train_dataset = build_prompt_dataset(
         session, args.env_url, args.request_timeout, n_prompts=args.dataset_size
     )
 
-    # Capture pre-training baseline score for the before/after comparison.
     print("\n=== Pre-training evaluation ===")
     pre_score = evaluate_agent(
         session, model, tokenizer,
@@ -631,31 +644,37 @@ def train(args: argparse.Namespace) -> None:
     action_reward_fn = make_action_validity_reward_function()
     protocol_reward_fn = make_protocol_adherence_reward_function()
 
-    # Build GRPOConfig kwargs; conditionally disable Dr. GRPO (trl>=0.12) to stay
-    # on the standard GRPO loss API that Unsloth's compiled cache expects.
-    import inspect as _inspect
-    _grpo_fields = set(_inspect.signature(GRPOConfig.__init__).parameters)
-    _extra = {"use_dr_grpo": False} if "use_dr_grpo" in _grpo_fields else {}
+    # Conditionally disable Dr. GRPO (added in trl>=0.12) to use the standard
+    # GRPO loss that doesn't require old_logps / ref_logps.
+    _grpo_fields = set(inspect.signature(GRPOConfig.__init__).parameters)
+    _extra_config: dict[str, Any] = {}
+    if "use_dr_grpo" in _grpo_fields:
+        _extra_config["use_dr_grpo"] = False
 
     grpo_config = GRPOConfig(
         output_dir=args.output_dir,
         learning_rate=args.learning_rate,
         per_device_train_batch_size=1,
-        # Accumulate over 4 steps so each effective update sees 4 * num_generations rollouts.
         gradient_accumulation_steps=4,
-        # Minimum 4 generations for meaningful advantage variance; 8 is better.
         num_generations=args.num_generations,
         max_completion_length=args.max_new_tokens,
         num_train_epochs=args.epochs,
         report_to="none",
         logging_steps=1,
-        save_steps=999999,  # skip intermediate checkpoints to save Colab disk
-        **_extra,
+        save_steps=999999,
+        **_extra_config,
+    )
+
+    # Support both TRL ≤0.11 (tokenizer=) and TRL ≥0.12 (processing_class=)
+    _trainer_sig = set(inspect.signature(GRPOTrainer.__init__).parameters)
+    _tok_kwarg = (
+        {"processing_class": tokenizer}
+        if "processing_class" in _trainer_sig
+        else {"tokenizer": tokenizer}
     )
 
     grpo_trainer = GRPOTrainer(
         model=model,
-        processing_class=tokenizer,
         reward_funcs=[
             env_reward_fn,
             format_reward_fn,
@@ -664,6 +683,7 @@ def train(args: argparse.Namespace) -> None:
         ],
         args=grpo_config,
         train_dataset=train_dataset,
+        **_tok_kwarg,
     )
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -671,15 +691,12 @@ def train(args: argparse.Namespace) -> None:
     print("\n=== GRPO Training ===")
     grpo_trainer.train()
 
-    # Save model adapter weights.
     grpo_trainer.model.save_pretrained(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
 
-    # Generate curves from the trainer's own log history (reflects actual GRPO updates).
     print("\n=== Saving training curves ===")
     save_training_curves(grpo_trainer.state.log_history, output_path=".")
 
-    # Capture post-training score for before/after evidence.
     print("\n=== Post-training evaluation ===")
     post_score = evaluate_agent(
         session, model, tokenizer,
@@ -699,28 +716,28 @@ def train(args: argparse.Namespace) -> None:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="GRPO training for SRE OpenEnv — fixed pure-GRPO loop")
-    parser.add_argument("--model_name", type=str, default="unsloth/Qwen2.5-1.5B-Instruct",
-                        help="Colab default: unsloth/Qwen2.5-1.5B-Instruct. For A100: meta-llama/Meta-Llama-3-8B-Instruct")
+    parser = argparse.ArgumentParser(description="GRPO training for SRE OpenEnv")
+    parser.add_argument(
+        "--model_name", type=str, default="Qwen/Qwen2.5-1.5B-Instruct",
+        help="HuggingFace model ID. Default: Qwen/Qwen2.5-1.5B-Instruct (fits Colab T4).",
+    )
     parser.add_argument("--env_url", type=str, default="http://localhost:7860")
-    # epochs = number of full passes over the prompt dataset through GRPOTrainer
     parser.add_argument("--epochs", type=int, default=3,
-                        help="Full training epochs. 3 is enough to show a reward trend on Colab T4.")
+                        help="Full training epochs (3 shows a reward trend on Colab T4).")
     parser.add_argument("--max_steps", type=int, default=15,
-                        help="Max env steps per evaluation episode (not used in training loop)")
+                        help="Max env steps per evaluation episode.")
     parser.add_argument("--dataset_size", type=int, default=20,
-                        help="Number of prompts to build from live env resets. More = better coverage.")
+                        help="Number of prompts built from live env resets.")
     parser.add_argument("--output_dir", type=str, default="./artifacts/grpo-sre")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--learning_rate", type=float, default=5e-6)
     parser.add_argument("--request_timeout", type=float, default=20.0)
     parser.add_argument("--max_new_tokens", type=int, default=128)
     parser.add_argument("--max_prompt_length", type=int, default=1024,
-                        help="Truncate prompts to this length to fit Colab T4 VRAM")
+                        help="Truncate prompts to this length to fit Colab T4 VRAM.")
     parser.add_argument("--max_seq_length", type=int, default=2048)
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--top_p", type=float, default=0.9)
-    # 4 is the minimum for meaningful GRPO advantage variance; 8 is better on larger GPUs
     parser.add_argument("--num_generations", type=int, default=4,
                         help="Completions per prompt for advantage estimation. Min 4.")
     parser.add_argument("--lora_r", type=int, default=16)
